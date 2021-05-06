@@ -1,0 +1,1584 @@
+---
+title: "Chaper 2 Analysis"
+author: "Ricardo Silva"
+date: "19/10/2020"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup}
+knitr::opts_chunk$set(
+	fig.height = 5,
+	fig.width = 8,
+	dpi = 180,
+	message = FALSE,
+	warning = FALSE,
+	cache = TRUE,
+	echo = TRUE
+)
+```
+
+## Aims
+
+Coastal environments are facing fast changes around the world and the knowledge on how microbial communities are be affected still in debate. There is lack of understanding on how microbial communities respond to nutrient gradients and human activity in Macquarie Harbour. This research attempted to improve the knowledge on it by exploring the relationships among, microbial diversity and networks, and nutrient gradients. The main focus of this study is to analyze the spatial variation and environmental parameters that drive microbial communities during the late spring of 2018. 
+
+This study seeks to provide more insights on the microbial community of the Macquarie Harbour. We explored how communities change along different habitats and between the surface and intermediate waters (below the surface where depth varied between 4.46 and 11.80 meters) of the harbor. We examined how they differentiate along an environmental gradient from the river to the ocean. Also, we analyzed the relationship among microbial communities and changing environmental conditions due to aquaculture activities. It was assumed that microbial community would be associated to among and within the habitats analyzed (ocean, Macquarie Harbour and river). Also, the environmental parameters changed by the fish farms within Macquarie Harbour would decouple the relationship between microbial community and Macquarie Harbour surface and subsurface with respect to natural local factors driving the community structure. For that, 16S and 18S rRNA genes high-throughput sequences and microbial network analyses were used to identify variations in key microbial taxa related to changes in environmental conditions. 
+
+# Packages and initial steps
+
+```{r packages and functions}
+# set working directory and seed
+setwd("C:/Users/rrocha/Documents/R/phd/2018/data")
+folder_path <- "C:/Users/rrocha/Documents/R/phd/2018/output/"
+seed = 1234
+
+# load the packages
+# main packs to start with
+# BiocManager::install("ade4") # -> to get packages from bioconductor website
+pkgs <- c("WGCNA","phyloseq", "microbiome", "vegan",'egg','adespatial', 'corrplot','RColorBrewer','tidymodels','corrr','GGally','patchwork',"circlize","multcomp",
+          'tidytext','hrbrthemes','embed', 'pvclust','skimr', 'RColorBrewer', 'grid',"pls","tidyverse") # Load packages
+
+invisible(sapply(pkgs,require, character = TRUE))
+select <- dplyr::select # because MASS conflict
+
+packageVersion("tidyverse")
+
+source('~/R/phd/2018/script/chapter2/my_functions.R')
+source('~/R/phd/2018/script/chapter2/theme_publication.R')
+theme_set(theme_Publication_3())
+
+# set colors
+cols_site_layer <- c("ocean_S" = "blue", "C_S" = "darkgoldenrod3", "C_P" = "darkgreen", "B_S" = "orange2", 'B_P' = 'cyan4', 'A_S' = 'orange4', 'A_P' = 'darkseagreen4', 'GR_S' = 'firebrick3')
+cols_layer <- c('S'='chocolate4','P'='darkcyan')
+cols_hab_layer <- c('ocean_S' = 'blue', 'MH_S' = 'chocolate', 'MH_P' = 'darkseagreen4' , 'GR_S' = 'firebrick3' )
+
+# check the working directory
+current_directory <- getwd()
+paste("Working in directory:", current_directory)
+```
+
+
+```{r prep data}
+# get and prepare the data
+# getting the data and filtering
+# OTU table
+OTUdf <- read.csv("OTU_all_2018.csv",  row.names = 1, head = TRUE)
+# taxonomy table
+TAXdf <- read.csv("taxa_all_2018.csv", row.names = 1, head = TRUE)
+# metadata table
+meta <- read.csv("meta_2018.csv", row.names = 1)
+
+```
+
+```{r prep data - OTU table}
+# check OTU table
+str(OTUdf)
+names(OTUdf)[1:5]
+# let's remove extra text around the table
+names(OTUdf) <- str_replace_all(names(OTUdf), "_S*[0-9]+",'')
+# names(OTUdf) <- gsub("_S*[0-9]+",'',names(OTUdf))
+row.names(OTUdf)[1:5]
+row.names(OTUdf) <- row.names(OTUdf) %>% str_replace_all("MH18_", "")
+# row.names(OTUdf) <- gsub("MH18_", "", row.names(OTUdf))
+OTUdf <- OTUdf %>% dplyr::select(-MH063SR, -MH028SC) # replicate samples
+```
+
+```{r prep data - tax table}
+# check if there is any NA in the taxa table
+str(TAXdf)
+sum(is.na(TAXdf))
+TAXdf %>% map(~sum(is.na(.))) %>% as.data.frame()
+apply(TAXdf, 2, function(x) any(is.na(x)))
+# remove NAs in Kingdom and Phylum
+TAXdf <- TAXdf %>% drop_na(Kingdom, Phylum)
+# replace NA by unknown
+TAXdf <- TAXdf %>% replace(is.na(.), "unknown")
+# remove extra text
+TAXdf <- TAXdf %>% rownames_to_column("OTU") %>%
+  mutate(OTU = str_replace(OTU, "MH18_", "")) %>%
+  # change Family Mitochondria in the bacterial order Rickettsiales to o_Rickettsiales
+  mutate(Family = case_when(Family == "Mitochondria" ~ "o_Rickettsiales",
+                            TRUE ~ as.character(Family))) %>%
+  column_to_rownames("OTU")
+
+TAXdf %>% filter(Family == "o_Rickettsiales")
+
+# row.names(TAXdf) <- gsub("MH18_", "", row.names(TAXdf))
+TAX.table <- TAXdf # generate another table with an OTU column to use later
+
+# new tax table does not have the smae OTUs. Subsetting OTU table
+OTUdf <- OTUdf %>% rownames_to_column('OTU') %>% filter(OTU %in% TAXdf$OTU)
+TAXdf <- TAXdf %>% filter(OTU %in% OTUdf$OTU)
+names <- TAXdf$OTU 
+OTUdf <- OTUdf %>% arrange(match(OTU, names)) %>% column_to_rownames('OTU')
+
+TAXdf <- TAXdf %>% select(-seq) %>% column_to_rownames("OTU") 
+
+```
+
+```{r prep data - meta table}
+# check and change metadata 
+str(meta)
+meta <- meta %>% 
+        unite("Sample_ID", c('Sample_ID', 'Site','Habitat',"Layer"), remove = FALSE, sep='_') %>% 
+        unite("Site_Layer", c('Site', 'Layer'), remove = FALSE, sep='_') %>%
+        unite('Habitat_Layer', c('Habitat', 'Layer'), remove = FALSE, sep='_') %>% 
+        rename(Temperature = T) 
+meta <- meta %>% mutate(Sample_ID = str_replace(Sample_ID, '_GR_GR', "")) %>%
+                 mutate(Sample_ID = str_replace(Sample_ID, '_ocean_ocean',"")) 
+ 
+# make categories according minimum distance from the cage
+# meta$DistCat <- cut(abs(meta$Min.distance_cage), c(0,1,2,4,6,Inf),c("0-1","1-2","2-4","4-6","6-15"), include.lowest=T)
+meta <- meta %>% dplyr::filter(Short_ID !='MH063S-R' & Short_ID != 'MH028S-C')
+meta <- meta %>% 
+  mutate(DistCat=cut(Min.distance_cage, breaks=c(0,1,2,4,6,Inf), labels=c("0-1","1-2","2-4","4-6","6-15"))) %>%
+  mutate_if(is.character, as.factor) # convert all character columns to factor
+# skimr::skim(meta)
+
+# make another column uniting Site and ID
+# meta <- meta %>% unite("ID", c('Site', 'Short_ID'), remove = FALSE, sep='_') 
+rownames(meta) <- meta$Sample_ID
+names(OTUdf) <- row.names(meta)
+meta.NA <- names(meta)[apply(meta,2,function(x) any(is.na(x)))] # vector with columns that contain NAs
+#  "pH" "Turbidity" "DO_perc" "DO"
+
+```
+
+```{r prep data - phyloseq objects}
+# phyloseq object
+pseq.all <- phyloseq(otu_table(as.matrix(as.data.frame(OTUdf)), taxa_are_rows = TRUE),
+                     tax_table(as.matrix(TAXdf)),sample_data(meta))
+pseq.all
+# Bacteria
+pseq.bac <- subset_taxa(pseq.all, (Kingdom %in% c("Bacteria")))
+# Archaea
+pseq.arc <- subset_taxa(pseq.all, (Kingdom %in% c("Archaea")))
+# Eukaryota
+pseq.euk <- subset_taxa(pseq.all, (Kingdom %in% c("Eukaryota")))
+
+# make a list of these phyloseq objects
+pseq.list <- list(pseq.arc,pseq.bac,pseq.euk)
+names(pseq.list) <- c('Archaea', 'Bacteria', 'Eukaryotes')
+
+# pseq_df_bac <- microbiomeutilities::phy_to_ldf(pseq.list{{2}}, transform.counts = NULL) # pseq to long format
+```
+
+## Methods
+
+### Map - Sampling Sites
+
+```{r sampling map}
+
+```
+
+### Environmental Factors Analysis
+
+To avoid collinearity: Analyze correlation among environmental parameters. If there is, combine values into one parameter for downstream analysis. (r > |0.7|, P ≤ 0.001). Before the PCA, data were log transformed if the distribution was skewed. 
+
+PCA: prior to PCA transform the data. 
+
+PERMANOVA: to determine the influences of regions and layers (both surface and intermediate waters)
+
+```{r env factors summary tables}
+# table env par
+df.env <- meta %>% select(Temperature:NH4 ,-pH, -Turbidity, -DO, -DO_perc) 
+write.csv(df.env, "C:/Users/rrocha/Documents/R/phd/2018/output/data/all/env/df_env.csv")
+# Summary 
+# Environmnental data (surface samples have NAs for pH, Turbidity and DO, DO_perc)
+meta_long <- meta %>% 
+              select(Site_Layer,Temperature:NH4 ,-pH, -Turbidity, -DO, -DO_perc) %>% 
+              pivot_longer(names_to="env_par", values_to="value", -Site_Layer) 
+
+meta_summary.site <- meta_long %>% group_by(Site_Layer, env_par) %>%
+                      summarise(mean= mean(value), sd= sd(value), max = max(value),min = min(value))
+
+meta_summary.site1 <- meta %>% 
+                        select(Site_Layer,Temperature:NH4 ,-pH, -Turbidity, -DO, -DO_perc) %>% 
+                        group_by(Site_Layer) %>%
+                        dplyr::summarise(across(where(is.numeric), list(mean= mean, sd = stats::sd, max = base::max, min = base::min)))
+
+# last format on excel
+write.csv(meta_summary.site, "C:/Users/rrocha/Documents/R/phd/2018/output/data/all/env/meta_summary_site.csv")
+```
+
+```{r env factors stats}
+# making summary tables (ANOVA and Tukey)
+stats.env <- meta_long %>% 
+  nest(data = c(Site_Layer, value)) %>% 
+  mutate(model = purrr::map(data, ~anova(lm(value ~ Site_Layer, .))), 
+         tidy = purrr::map(model, broom::tidy)) %>% 
+  select(env_par, tidy) %>% 
+  unnest(tidy)
+write.csv(stats.env, "C:/Users/rrocha/Documents/R/phd/2018/output/data/all/env/anova_env_summary.csv")
+
+# use autoplot() for Diagnostic plots
+# Compute a linear model
+m <- lm(Temperature ~ Site_Layer, data = meta)
+# Create the plot
+autoplot(m, which = 1:6, ncol = 2, label.size = 3, colour = "Site_Layer")
+
+# Tukey Bonferroni adjustments (P-values obtained by number of comparisons)
+# #library(multcomp)
+stats.env.Tukey.BF <- meta_long %>% 
+  nest(data = c(Site_Layer, value)) %>% 
+  mutate(model = purrr::map(data, ~ multcomp::glht(aov(value ~ Site_Layer, .), linfct = multcomp::mcp(Site_Layer = "Tukey"), test = multcomp::adjusted(type = "bonferroni"))), 
+         tidy = purrr::map(model, broom::tidy)) %>% 
+  dplyr::select(env_par, tidy) %>% 
+  unnest(tidy) 
+write.csv(stats.env.Tukey.BF, "C:/Users/rrocha/Documents/R/phd/2018/output/data/all/env/anova_env_summary_tukey_BF.csv")
+
+# only sig
+env.sig.tukey.BF <- stats.env.Tukey.BF %>% filter(adj.p.value < 0.001)                    write.csv(env.sig.tukey.BF, "C:/Users/rrocha/Documents/R/phd/2018/output/data/all/env/anova_env_summary_tukey_sig_BF.csv")
+
+```
+
+
+```{r env factors plots}
+# lines plots - both layers
+env_line_plot <- meta %>% 
+  select(Site_Layer,Layer,Temperature:NH4 ,-pH, -Turbidity, -DO, -DO_perc) %>% 
+  pivot_longer(names_to="env_par", values_to="value", -c('Site_Layer','Layer')) %>%
+  group_by(Layer, Site_Layer, env_par) %>%
+  summarise(mean= mean(value), sd= sd(value), max = max(value),min = min(value)) %>%
+  ggplot(aes(x= Site_Layer, y = mean,  color = Site_Layer, group = interaction(env_par, Layer))) + 
+  geom_errorbar(aes(ymin = mean - sd, ymax = mean +sd), width = .1) + 
+  geom_line(color = 'darkgray', alpha = 0.6) + 
+  geom_point(alpha = 0.6) +
+  facet_wrap(~env_par, scales = 'free_y') +
+  theme_bw() +
+  scale_x_discrete(limits = c('ocean_S','C_S','C_P', 'B_S','B_P','A_S','A_P','GR_S'))  + 
+  scale_color_manual(values = cols_site_layer) +
+  theme_plex()+
+  theme_Publication_3() + 
+  labs(title="Environmental Parameters", x = "Sites_Layer (Layer: S = surface; P = intermediate layer)") + 
+  theme(legend.position = "none") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) 
+
+# boxplot
+meta <- meta %>% mutate(Layer = fct_relevel(Layer, c("S", "P")))
+boxplot_env <- meta %>% 
+  select(Layer,Site,Temperature:NH4,-pH, -Turbidity, -DO, -DO_perc) %>% 
+  mutate(Layer = fct_relevel(Layer, c("S", "P"))) %>%
+  pivot_longer(names_to="env_par", values_to="value", -c('Layer','Site')) %>%
+  group_by(Layer, Site) %>%
+  ggplot(aes(x=Site, y=value, color = Layer)) +
+  geom_boxplot() +
+  scale_color_manual(values = cols_layer) +
+  geom_jitter(alpha=0.2, position = position_jitterdodge())+
+  geom_point(size=1,alpha=0.2)+theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  facet_wrap(~env_par, scales = "free_y") +
+  theme(strip.background = element_rect(fill = "white")) +
+  scale_x_discrete(limits = c("ocean", 'C', 'B', 'A','GR')) +  
+  labs(title = "Environmental Parameters - Surface vs Intermediate Layers", x = "Sites", y = 'Observed Values') +
+  theme_Publication_3() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r env factor correlation}
+# check to see if any variables are autocorrelated
+meta.cor <- meta %>% select(Temperature:NH4, -pH, -Turbidity, -DO, -DO_perc)
+
+# check the normality
+for (i in 1:8){print(shapiro.test(meta.cor[,i]))} # if p-vlaue > 0.05  we can assume the normality.
+
+# using tidymodels
+cor.tidy <- meta.cor %>%                # Create correlation data frame (cor_df).
+  correlate(method = 'spearman') %>%    # => Spearman for non-normal distributions
+  rearrange() %>%                      # rearrange by correlations
+  shave()                              # Shave off the upper triangle for a clean result
+
+cor.tidy %>% stretch() %>% filter(r > .85) # filtering (test for autocorrelation between variables) 
+# cor.tidy %>% fashion() # fashion way
+
+# plot network
+meta.cor %>% 
+  correlate(method = 'spearman') %>% 
+  network_plot(min_cor = .2, colors = c('darkorange', 'white', 'darkcyan'))
+
+# using GGally
+meta %>% 
+  #drop_na() %>% 
+  select(Habitat, Temperature, Sal, Chlorophyll, Nox:NH4) %>% 
+ # mutate_if(is.numeric, log1p) %>%
+  mutate(Habitat = recode(Habitat, HG = 'MH')) %>% 
+  ggpairs(mapping = aes(color = Habitat), 
+          upper = list(
+            continuous = wrap('cor', method = "spearman")
+          ),
+          lower = list(
+            continuous = "smooth",
+            continuous = wrap("points", alpha = 0.3))
+  )
+
+# plot correlogram
+meta.cor %>%  
+        cor(method = "spearman") %>% 
+        corrplot(type = 'upper', order = 'hclust', col = brewer.pal(n=8, name= "RdYlBu"))
+```
+
+```{r env factors - PCA}
+# prepare the data for PCA
+metaPCA <- meta %>% 
+  select(-DO, -DO_perc, -Nox, -NO2) %>% # remove the columns that are autocorrelated (Salinity with Nox and NH4 with NO2)
+  select_if(~!any(is.na(.))) %>% # select columns without NAs
+  select(Sample_ID, Site_Layer, Site, Layer, Habitat_Layer, Habitat, Temperature:NH4) # select env factors and Site names for the PCA
+
+# 1 - recipe - no values computed 
+
+# Write recipe for PCA
+pca_rec <- recipe(~., data = metaPCA) %>% # ~. because it is unsupervised
+# Specify character_code as key/id column
+  update_role(Sample_ID, Site_Layer, Site, Layer, Habitat_Layer, Habitat, new_role = 'id') %>% 
+# normalize the data (center and scale all predictors (mean to zero and standard deviation of one)
+  step_normalize(all_predictors()) %>%
+# PCA is done here
+# can use threshold to specify if we want to capture 90% of variance in the data (threshold = 0.9)
+  step_pca(all_predictors(),  id = "pca") # for the bar plot showing how much variance each component accounts for
+
+# 2 prep the recipe - values computed (prep() implements the recipe)
+pca_prep <- prep(pca_rec)
+
+# variance bar plot (variance explained)
+total_variance_plot <- pca_prep %>%
+  tidy(id = 'pca', type = 'variance') %>%
+  dplyr::filter(terms == 'percent variance') %>%
+  ggplot(aes(x = component, y = value)) +
+  geom_col(fill = "lightblue") +
+  # xlim(c(0,5))+
+  labs(y = '% of total variance')
+
+# most contributing variables (PCA loadings)
+tidied_pca <-  tidy(pca_prep, 2) # gives for every PC computed the value for each term(predictor) = Scores
+# it can be notice that Nox and NH4 in the first component are closer but in opposite direction which means
+# that they tend to not occur in the same sample. 
+# Opposite direction means that the predictors tend to occur separately and vice versa.
+pred_pca_env_factors <- tidied_pca %>% 
+  #filter(component %in% paste0('PC',1:4)) %>% # first three components 
+  group_by(component) %>% 
+  #top_n(8, abs(value)) %>%
+  ungroup() %>%
+  mutate(terms = reorder_within(terms, abs(value), component)) %>%
+  ggplot(aes(abs(value), terms, fill = value > 0 )) +
+  geom_col() +
+  tidytext::scale_y_reordered() +
+  scale_fill_manual(values = c("#b6dfe2", "#0A537D")) +
+  facet_wrap(~component, scales = "free_y") +
+  labs(y = NULL, x = "Absolute values of contribution", fill = 'Positive?') + 
+  theme_plex()
+
+# for visualization = juice
+pca.plot <- juice(pca_prep) %>% # juice() to return the results of a recipe
+        mutate(Layer = fct_relevel(Layer, c("S", "P"))) %>%
+  ggplot(aes(PC1,PC2)) +
+  geom_point(aes(color = Site_Layer, shape = Layer), alpha = 0.7, size =5) + 
+  #geom_text(check_overlap = TRUE, hjust = 'inward', family = 'IBM Plex Sans') +
+  geom_hline(yintercept=0, linetype="dashed", alpha = 0.3) +
+  geom_vline(xintercept=0, linetype="dashed", alpha = 0.3) +
+  # scale_colour_viridis_d(option = "plasma") 
+  scale_color_manual(values = cols_site_layer) + 
+        theme_Publication_3()
+
+# get % variation to add in the legend axis
+var_explained <- pca_prep %>%
+  tidy(id = 'pca', type = 'variance') %>%
+  dplyr::filter(terms == 'percent variance') %>%
+  pull(value)
+pca.plot$labels$x <- paste0(pca.plot$labels$x," ", round(var_explained[1],2),"%")
+pca.plot$labels$y <- paste0(pca.plot$labels$y," ", round(var_explained[2],2),"%")
+
+# PCA loading and Scores
+# get pca loadings into a wider format
+pca_wider <- tidied_pca %>%
+  pivot_wider(names_from = component, id_cols = terms)
+
+# define arrow style
+arrow_style <- arrow(length = unit(.05, "inches"),
+                     type = "closed")
+
+pca.plot <- pca.plot +
+  geom_segment(data = pca_wider,
+               aes(xend = PC1*2, yend = PC2*2),
+               x = 0, y = 0,
+               arrow = arrow_style) +
+  geom_text(data = pca_wider,
+            aes(x = PC1*2.1, y = PC2*2.1, label = terms), 
+            hjust = 0, 
+            vjust = 1,
+            size = 5, 
+            color = '#0A537D')
+pca.plot 
+```
+
+```{r env factors - PCA with kmean}
+# get PCA socres 
+scores.pca <- juice(pca_prep) %>% select(-Site,-Site_Layer ,-Layer, -Habitat_Layer, -Habitat) %>% column_to_rownames(var = 'Sample_ID')
+
+# k-means clustering [assume 3 clusters]
+km <- kmeans(scores.pca, centers= 4, nstart=5)
+
+# add ellipses to PCA plot
+k.env <- factor(km$cluster)
+pca.env <- pca.plot +  
+  stat_ellipse(aes(x=PC1,y=PC2,group=k.env),
+               level=0.95, alpha=0.7, type = "norm", linetype = 2) +
+        ggtitle("PCA: Environmental variables")
+```
+
+Comparison of clusters and habitat_layer shows that samples from each layer and habitat are perfectly separated, indicating that they have clear differences regarding physicochemical characteristics.
+
+```{r env factors - Permanova}
+# euclidean distance matrix of env fators 
+env.fact <- metaPCA %>% select(Temperature:NH4) %>% vegdist(method="euclidean")
+
+# Adonis test - partitioning the euclidean distance matrix by Layer and site
+perm.df <- vegan::adonis(env.fact ~ Layer*Site, permutations = 9999, pairwise = TRUE, method = 'euclidean', data = metaPCA)
+
+# maka a table to be saved as csv file
+adonis.tb <- perm.df$aov.tab %>%  as.data.frame()  %>% drop_na()
+colnames(adonis.tb)[6] <- 'p.value'
+row.names(adonis.tb)[1] <-'PERMANOVA'
+adonis.tb <- adonis.tb %>% rownames_to_column(var = 'pairs') %>% select(-MeanSqs) 
+adonis.tb$p.adjusted <- NA
+
+# Pairwise Adonis test - partitioning the euclidean distance matrix by Habitat_Layer
+pair.df <- pairwiseAdonis::pairwise.adonis(env.fact, metaPCA$Habitat_Layer, perm = 9999, p.adjust.m = "bonferroni")
+
+# filter and join with permanova output
+pair.tb <- pair.df %>% select(-sig) %>% filter(p.adjusted < 0.01)
+perm.tb <- rbind(adonis.tb, pair.tb)
+
+# save as csv
+write.csv(perm.tb, "C:/Users/rrocha/Documents/R/phd/2018/output/data/all/permanova_env.csv")
+```
+
+
+```{r clean R env}
+# keep the environment tidy
+rm(list=setdiff(ls(), c('seed',"meta","OTUdf",'pseq.all', 'pseq.list', 'TAXdf', 'TAX.table','cols_site_layer', 'cols_layer',"cols_hab_layer","pca.env")))
+source('~/R/phd/2018/script/chapter2/my_functions.R')
+source('~/R/phd/2018/script/chapter2/theme_publication.R')
+```
+
+### Alpha Diversity
+
+Alpha diversity analyses were performed to explore variation in OTU richness and evenness among habitats and waters masses in the harbor. Prior to analysis samples were rarified to the lowest sequence abundance for any one sample. Chao1 and non-parametric Shannon diversity were calculated.
+
+Linear models and ANOVAs were used to test for variation in alpha diversity among habitats. For Macquarie Harbor samples, linear mixed-effect models and ANOVAs were used to test influences of transects, distance from the cage, and water masses on alpha diversity, controlling for habitats as a random effect. 
+
+If significant variation was found within an ANOVA result, post-hoc comparisons were implemented between sample groups using Tukey’s Honest Significant Differences (HSD) tests with Bonferroni adjustments (P-values obtained by number of comparisons) for pairwise comparisons.
+
+```{r alpha div data prep}
+# show variable sampling depth for each kingdom
+for(i in 1:length(pseq.list)){
+  print(names(pseq.list[i]))
+  print(summary(sample_sums(pseq.list[[i]])))
+}
+
+# plot species accumulation curves for each sample 
+# set step at a high number to speed up plotting
+for(i in 1:length(pseq.list)){
+  # set step at a high number to speed up plotting
+  rarecurve(t(otu_table(pseq.list[[i]])), step=500)
+  # add lines indicating sampling depth
+  abline(v=sample_sums(pseq.list[[i]]), lty='dotted', lwd=0.5)
+}
+
+# load #library
+#library(QsRutils)
+# calculate Good's coverage (only uses singletons)
+for(i in 1:length(pseq.list)){
+  print(names(pseq.list[i]))
+  print(summary(goods(t(otu_table(pseq.list[[i]])))))
+}
+
+for (i in 1:length(pseq.list)) {
+  p <- pseq.list[[i]] %>% estimate_richness(measures = c('Observed', 'Chao1')) %>%
+    bind_cols(readcounts=sample_sums(pseq.list[[i]])) %>%
+  plotly::plot_ly(x=~readcounts, y=~Chao1) %>% 
+    plotly::add_markers(text=rownames(.)) %>%
+    plotly::layout(title = paste(names(pseq.list[i])))
+  print(p)
+  rm(p)
+}
+
+# according to the results above: for 
+# archaea = 40000
+# bacteria = ok
+# euk = 95000
+
+# rarefy the phy;oseq objects and calculate the alpha diversity
+arc.rar <- rarefy_even_depth(pseq.list[[1]], 40000, rngseed=101)
+bac.rar <- rarefy_even_depth(pseq.list[[2]], rngseed=101)
+euk.rar <- rarefy_even_depth(pseq.list[[3]], 95000, rngseed=101)
+
+# make a list of these phyloseq objects
+pseq.rar.list <- list(arc.rar,bac.rar,euk.rar)
+names(pseq.rar.list) <- c('Archaea', 'Bacteria', 'Eukaryotes')
+
+```
+
+- Notes: 
+ + Species richness describes the number of different species present in an area (more species = greater richness)
+ + Species evenness describes the relative abundance of the different species in an area (similar abundance = more evenness)
+ + As species richness and evenness increase, so diversity increases.
+ + Observed: count of unique OTUs in each samples
+ + Chao1: estimate diversity from abundance data (influenced by rare species)
+ + Shannon's (H): influenced by rare species
+ + Simpson's (D):less sensitive to the difference in taxa richness than Shannon's index - high values mean less diversity (range: 0-1)
+ + inverse Simpson: 1/D - positively correlated with Shannon's
+ + Evenness (Pielou's evenness): the lower value of Evenness, the lower the presence of a dominant specie = high diversity
+ + [link](http://www.countrysideinfo.co.uk/simpsons.htm)
+
+- Inv Simpson (Simpson's Reciprocal Index):
+
+ + A high index value suggests a stable site with many different niches and low competition (high richness and evenness) 
+ + A low index value suggests a site with few potential niches where only a few species dominate (low richness and evenness). 
+ + The index value may change in response to an ecological disturbance (such as human intervention or natural disasters)
+ 
+```{r plot alpha}
+
+# Plot using microbiomeSeq function
+for (i in 1: length(pseq.rar.list)) {
+  sample_data(pseq.rar.list[[i]])$Site_Layer <- factor(sample_data(pseq.rar.list[[i]])$Site_Layer, levels = c('ocean_S','C_S','C_P','B_S','B_P','A_S','A_P','GR_S'))
+  # generate a data frame for plot
+  p <- plot_anova_diversity(pseq.rar.list[[i]], method = c('richness','shannon', 'evenness', "invsimpson"), grouping_column = 'Site_Layer', pValueCutoff = 0.001, print.lines = FALSE)
+  p <- p +  theme_Publication_3() + 
+    theme(legend.position = "none") +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1)) + 
+    labs(x = "Sites_Layers", y = NULL) +
+    scale_color_manual(values = cols_site_layer) +
+    ggtitle(paste("Alpha Diversity:",names(pseq.rar.list[i]))) 
+  print(p)
+  rm(p)
+  
+}
+
+# calculate the Stats for alpha diversity and make a table (lm)
+for (i in seq_along(pseq.rar.list)) {
+  adiv <- estimate_richness(pseq.rar.list[[i]], measures=c("Chao1", "Shannon",  "InvSimpson"))
+  adiv <- pseq.rar.list[[i]] %>% evenness('Pielou') %>% rename(Pielou = pielou) %>% 
+    bind_cols(adiv) %>% relocate(Pielou, .after = InvSimpson)
+  adiv$Sample_ID<- rownames(adiv) %>%
+    as.factor()
+  
+  df <- sample_data(pseq.rar.list[[i]]) %>% 
+    unclass() %>% data.frame() %>%
+    left_join(adiv, by = "Sample_ID") %>%
+    select(Site_Layer, Chao1 , Shannon , InvSimpson, Pielou) %>% 
+    gather(key="env_par", value="value", -Site_Layer) %>% 
+    group_by(Site_Layer, env_par)%>%
+    summarise(mean= mean(value), sd= sd(value), max = max(value),min = min(value))
+  write.csv(df, file = paste0("C:/Users/rrocha/Documents/R/phd/2018/output/data/all/alpha/alpha_summary.Site_Layer_", names(pseq.rar.list[i]), ".csv"))
+  
+  df <- sample_data(pseq.rar.list[[i]]) %>% 
+    unclass() %>% data.frame() %>%
+    left_join(adiv, by = "Sample_ID") %>%
+    select(Site_Layer,  Chao1 , Shannon , InvSimpson, Pielou) %>% 
+    gather(key="env_par", value="value", -Site_Layer) %>% 
+    nest(data = c(Site_Layer, value)) %>% 
+    mutate(model = map(data, ~ anova(lm(value ~ Site_Layer, .))), 
+           tidy = map(model, broom::tidy)) %>% 
+    select(env_par, tidy) %>% 
+    unnest(tidy)
+  write.csv(df, file = paste0("C:/Users/rrocha/Documents/R/phd/2018/output/data/all/alpha/alpha_anova_", names(pseq.rar.list[i]), ".csv"))
+  
+  df <- sample_data(pseq.rar.list[[i]]) %>% 
+    unclass() %>% data.frame() %>%
+    left_join(adiv, by = "Sample_ID") %>%
+    select(Site_Layer,  Chao1 , Shannon , InvSimpson, Pielou) %>% 
+    gather(key="env_par", value="value", -Site_Layer) %>% 
+    nest(data = c(Site_Layer, value)) %>% 
+    mutate(model = purrr::map(data, ~ multcomp::glht(aov(value ~ Site_Layer, .), linfct = multcomp::mcp(Site_Layer = "Tukey"), test = adjusted(type = "bonferroni"))), 
+           tidy = purrr::map(model, broom::tidy)) %>% 
+    select(env_par, tidy) %>% 
+    unnest(tidy)
+  write.csv(df, file = paste0("C:/Users/rrocha/Documents/R/phd/2018/output/data/all/alpha/alpha_Tuk_", names(pseq.rar.list[i]), ".csv"))
+ 
+   boxplot_alpha <- sample_data(pseq.rar.list[[i]]) %>% 
+    unclass() %>% data.frame() %>%
+    left_join(adiv, by = "Sample_ID") %>%
+    select(Site, Layer,  Chao1 , Shannon , InvSimpson, Pielou) %>% 
+    pivot_longer(cols = Chao1:Pielou,names_to="env_par", values_to="value") %>%  
+    mutate(Layer = factor(Layer, levels = c("S", "P"))) %>%
+    group_by(Layer, Site) %>%
+    ggplot(aes(x=Site, y=value, color = Layer)) +
+    geom_boxplot() +
+    geom_jitter(alpha=0.2, position = position_jitterdodge())+
+    geom_point(size=1,alpha=0.2)+theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    facet_wrap(~env_par, scales = "free_y") +ylab("Observed Values")+xlab("Sites") +
+    theme(strip.background = element_rect(fill = "white")) +
+    scale_x_discrete(limits = c("ocean", 'C', 'B', 'A','GR')) +  
+    scale_color_manual(values = cols_layer) +
+    ggtitle(paste0("Alpha Diveristy - Surface vs Intermediate Layers - ",names(pseq.rar.list[i]))) +
+    theme_Publication_3() + 
+    theme(axis.text.x = element_text(angle = 45, hjust = 1,size = 10),legend.position = 'bottom') 
+ 
+    print(boxplot_alpha)
+  
+  rm(adiv, df,boxplot_alpha)
+}
+
+```
+
+```{r corr: alpha and env}
+# Alpha - Environ correlations
+for (i in seq_along(pseq.rar.list)) {
+# calculate alpha indices
+  adiv <- estimate_richness(pseq.rar.list[[i]], measures=c("Chao1", "Shannon",  "InvSimpson"))
+  adiv <- pseq.rar.list[[i]] %>% evenness('Pielou') %>% rename(Pielou = pielou) %>% 
+    bind_cols(adiv) %>% relocate(Pielou, .after = InvSimpson)
+  adiv$Sample_ID <- rownames(adiv) %>% as.factor()
+# run the correlation 
+  cor.alpha_env <- meta %>% left_join(adiv) %>% select(Temperature:Pielou, -pH, -Turbidity, -DO, -DO_perc,-se.chao1) %>%  
+    correlate(method = 'spearman') %>%              # => Spearman for non-normal distributions
+    # rearrange() %>%                              # rearrange by correlations
+    mutate(across(is.numeric, ~ round(., 3))) %>%  # limiting the number of decimals 
+    shave()  %>%                                   # Shave off the upper triangle for a clean result
+    select(term:NH4)
+# save
+  write.csv(cor.alpha_env, file = paste0("C:/Users/rrocha/Documents/R/phd/2018/output/data/all/alpha/corr_alpha_env_", names(pseq.rar.list[i]), ".csv"))
+ rm(adiv,  cor.alpha_env)
+  } 
+```
+
+
+ 
+```{r tidying}
+# keep the environment tidy
+rm(list=setdiff(ls(), c('seed',"meta","OTUdf",'pseq.all', 'pseq.list', 'TAXdf', 'TAX.table','cols_site_layer', 'cols_layer',"cols_hab_layer","pca.env")))
+source('~/R/phd/2018/script/chapter2/my_functions.R')
+source('~/R/phd/2018/script/chapter2/theme_publication.R')
+```
+
+### Community Analysis 
+
+```{r number of taxa}
+for (i in seq_along(pseq.list)) {
+  pseq.list[i] %>% names() %>% print()
+  pseq.list[[i]] %>% tax_table() %>% as.data.frame() %>% 
+    summarise(across(where(is.character), ~n_distinct(.x))) %>% print()
+}
+
+```
+
+
+```{r data prep}
+# filtering data and clr-transformation
+min.prop=0.001 # minimum proportion in any sample (default)
+min.occurrence=0.001 # minimum occurrence across all samples (sparsity filter)
+# only surface and without outliers
+pseq.filt.list <- list()
+pseq.clr.list <- list()
+pseq.rel.filt.list <- list()
+for (i in seq_along(pseq.list)) {
+  # filtering and clr-transformation
+  d.filt0 <- CoDaSeq::codaSeq.filter(otu_table(pseq.list[[i]]), min.prop=0, min.occurrence=0, samples.by.row=FALSE)
+  d.filt <- CoDaSeq::codaSeq.filter(d.filt0, min.prop=min.prop, max.prop=1, min.occurrence=min.occurrence, samples.by.row=FALSE)
+  d.zero.hand <- t(zCompositions::cmultRepl(t(d.filt), label =0, method="CZM")) # filtered
+  d.clr.abund.filt <- CoDaSeq::codaSeq.clr(d.zero.hand, samples.by.row = FALSE) # samples as COLUMN
+  # creatin a TAX table for the phyloseq object
+  TAX.filt <- base::subset(TAXdf, row.names(TAXdf) %in% row.names(d.filt))
+  # create a phyloseq object with clr transformed data
+  df.clr <- phyloseq(otu_table(as.matrix(d.clr.abund.filt), taxa_are_rows = TRUE), 
+                     tax_table(as.matrix(TAX.filt)),sample_data(as.data.frame(sample_data(pseq.list[[i]]))))
+  # phyloseq with only filtered data
+  df.filt <- phyloseq(otu_table(as.matrix(as.data.frame(d.filt)), taxa_are_rows = TRUE), 
+                      tax_table(as.matrix(TAX.filt)), sample_data(as.data.frame(sample_data(pseq.list[[i]]))))
+  # transform relative
+  df.rel <- microbiome::transform(df.filt, 'compositional') # relative abundance
+  # naming
+  name <- paste(names(pseq.list[i]))
+  # put in a list
+  pseq.clr.list[[name]] <- df.clr
+  pseq.filt.list[[name]] <- df.filt
+  pseq.rel.filt.list[[name]] <- df.rel
+  
+  # clean the env
+  rm(d.filt0,d.filt, d.zero.hand, d.clr.abund.filt, TAX.filt, df.clr, df.filt, df.rel)
+}
+
+# checking
+table(tax_table(pseq.list[[2]])[,"Phylum"])
+table(tax_table(pseq.rel.filt.list[[2]])[,"Phylum"])
+sample_data(pseq.filt.list[[2]]) %>% row.names()
+```
+
+#### Composition plots
+
+Before the multivariate analysis, let's explore community data
+
+```{r community summary}
+# make tables by a tax level by Kingdom - top 5 (not filtered)
+summary_rel <- list()
+summary_all <- list()
+for (i in seq_along(pseq.list)) {
+  Rank <- rank_names(pseq.list[[i]])
+  for (j in seq(unique(Rank))) {
+    tax <- Rank
+    summary_rel[[j]] <- summarize_taxa(pseq.list[[i]], tax[[j]], arrange = TRUE) # function from 
+    names(summary_rel)[j] <- paste0(names(pseq.list[i]),"_",tax[[j]])
+    write.csv(summary_rel[[j]], paste0('C:/Users/rrocha/Documents/R/phd/2018/output/data/all/composition/summary_tables/all/rel_summary_all_',tax[[j]],'_',names(pseq.list[i]),".csv"))
+    name <- paste(names(pseq.list[i]))
+    summary_all[[name]][[j]] <- summary_rel[[j]]
+    names(summary_all[[i]])[j] <- paste(tax[j])
+  }
+}
+
+
+# make tables by tax level by Kingdom by Site Layer
+summary_rel_tax <- list()
+summary_all_tax <- list()
+table <- list()
+Group <- 'Habitat_Layer'
+group.level <- c('ocean_S','MH_S','MH_P','GR_S')
+for (i in seq_along(pseq.list)) {
+  Rank <- rank_names(pseq.list[[i]])
+  for (j in seq(unique(Rank))) {
+    tax <- Rank
+    summary_rel_tax[[j]] <- summarize_taxa(pseq.list[[i]], tax[[j]], arrange = TRUE, GroupBy = Group) 
+    table[[j]] <- summary_rel_tax[[j]] %>% 
+      select(-Abundance) %>%
+      pivot_wider(names_from = all_of(tax[[j]]), values_from = freq) %>% # transform in a wide table
+      arrange(factor(.data[[Group]], levels = group.level))
+    write.csv(table[[j]], paste0('C:/Users/rrocha/Documents/R/phd/2018/output/data/all/composition/summary_tables/group/rel_summary_',Group,'_',tax[[j]],"_",names(pseq.list[i]),".csv"))
+    name <- paste(names(pseq.list[i]))
+    summary_all_tax[[name]][[j]] <- summary_rel_tax[[j]]
+    names(summary_all_tax[[i]])[j] <- paste(tax[j])
+  }
+}
+```
+
+```{r subtax summary, eval=FALSE, include=FALSE}
+# make tables by each Family in each phylum by Kingdom by Site layer
+summary_rel_subtax <- list()
+summary_all_subtax <- list()
+for (i in seq_along(pseq.list)) {
+  Rank <- table(tax_table(pseq.list[[i]])[,"Phylum"]) %>% as.data.frame() %>% pull(Var1)
+  for (j in seq(unique(Rank))) {
+    tax <- Rank
+    summary_rel_subtax[[j]] <- summarize_by_subtaxa(pseq.list[[i]], str_c(tax[[j]]), 'Family','Site_Layer') %>%
+      arrange(factor(.$Site_Layer, levels = c('ocean_S','C_S','C_P','B_S','B_P','A_S','A_P','GR_S'))) %>%
+      select(-freq.within.group) %>%
+      slice_head(n = 5)
+    write.csv(summary_rel_subtax[[j]], paste0('C:/Users/rrocha/Documents/R/phd/2018/output/data/all/composition/summary_tables/summary_subtax/rel_summary_Site_Layer_',tax[[j]],"_",names(pseq.list[i]),".csv"))
+    name <- paste(names(pseq.list[i]))
+    summary_all_subtax[[name]][[j]] <- summary_rel_subtax[[j]]
+    names(summary_all_subtax[[i]])[j] <- paste(tax[j])
+  }
+}
+```
+
+```{r check for specific taxa}
+# all community
+pseq.filt.list[[2]] %>%
+  summarize_taxa("Class", GroupBy = "Habitat_Layer") %>% arrange(desc(Abundance))
+  filter_all(any_vars(.  == "ocean_S")) %>%
+  arrange(desc(Abundance))
+
+# or only within determined group
+pseq.filt.list[[3]] %>%
+summarize_by_subtaxa("Ochrophyta", 'Family',"Habitat_Layer") %>%
+  filter(Habitat_Layer == "MH_P")
+
+```
+
+
+```{r bar plots}
+# relative abundance and LCBD (Legendre and De Caceres, 2013)
+# Phylum
+# PS: need to modify the function to reorder x-axis
+p.phylum <- list()
+for (i in seq_along(pseq.rel.filt.list)) {
+  p.phylum[[i]] <-plot_taxa(pseq.rel.filt.list[[i]], taxo = 'Phylum', grouping_column = 'Site_Layer', method = 'hellinger')
+  p.phylum[[i]] <- p.phylum[[i]] + theme_Publication_3() + 
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    ggtitle(paste(names(pseq.rel.filt.list[i])," - Phylum"))
+}
+# egg::ggarrange(plots = p.phylum, labels = c("A", "B",'C'))
+
+# Class
+p.class <- list()
+for (i in seq_along(pseq.rel.filt.list)) {
+  p.class[[i]] <- plot_taxa(pseq.rel.filt.list[[i]], taxo = 'Class', grouping_column = 'Site_Layer', method = 'hellinger')
+  p.class[[i]] <- p.class[[i]] + theme_Publication_3() + 
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    ggtitle(paste(names(pseq.rel.filt.list[i])," - Class"))
+}
+
+# Family
+p.fam <- list()
+for (i in seq_along(pseq.rel.filt.list)) {
+  p.fam[[i]] <- plot_taxa(pseq.rel.filt.list[[i]], taxo = 'Family', grouping_column = 'Site_Layer', method = 'hellinger')
+  p.fam[[i]] <- p.fam[[i]] + theme_Publication_3() + 
+    theme(axis.text.x = element_text(angle = 45, hjust = 1),
+          legend.position = "bottom") +
+    ggtitle(paste(names(pseq.rel.filt.list[i])," - Family"))
+}
+
+# to explore the plots
+# plotly::ggplotly(p.fam[[3]])
+```
+
+```{r box plots}
+box_rank <- list()
+top_rank <- list()
+rank_name <- list()
+top_rank_name <- list()
+ps_name <- list()
+ps <- list()
+Rank <- c("Phylum" , "Class" ,  "Order" ,  "Family" , "Genus")
+# use summary_all_tax from summary
+for(i in seq_along(pseq.rel.filt.list)){
+  for (j in seq(unique(Rank))) {
+    # get the top class from the summary_rel list
+    rank_name <- Rank[[j]]
+    top_rank_name[[j]] <- summary_all_tax[[i]][[rank_name]] %>% ungroup() %>% select(all_of(rank_name)) %>% pull() %>% unique() 
+    name <- paste(names(pseq.rel.filt.list[i]))
+    top_rank[[name]][[j]] <- top_rank_name[[j]]
+    names(top_rank[[i]])[j] <- paste(Rank[j])
+}
+  # subset taxa
+  ps[[name]][[1]] <- pseq.rel.filt.list[[i]] %>% subset_taxa(Phylum %in% top_rank[[i]][['Phylum']])
+  names(ps[[i]])[1] <- paste('Phylum')
+  ps[[name]][[2]] <- pseq.rel.filt.list[[i]] %>% subset_taxa(Class %in% top_rank[[i]][['Class']])
+  names(ps[[i]])[2] <- paste('Class')
+  ps[[name]][[3]] <- pseq.rel.filt.list[[i]] %>% subset_taxa(Order %in% top_rank[[i]][['Order']])
+  names(ps[[i]])[3] <- paste('Order')
+  ps[[name]][[4]] <- pseq.rel.filt.list[[i]] %>% subset_taxa(Family %in% top_rank[[i]][['Family']])
+  names(ps[[i]])[4] <- paste('Family')
+  ps[[name]][[5]] <- pseq.rel.filt.list[[i]] %>% subset_taxa(Genus %in% top_rank[[i]][['Genus']])
+  names(ps[[i]])[5] <- paste('Genus')
+} 
+
+for (i in seq_along(pseq.rel.filt.list)) {
+  # to sort the x axis labels
+ #sample_data(pseq.rel.filt.list[[i]])$Site_layer <- factor(sample_data(pseq.rel.filt.list[[i]])$Site_layer,levels = c('ocean_S','C_S','C_P','B_S','B_P','A_S','A_P','GR_S'))
+  # run the box plot function
+ p1 <- boxplot.pseq(ps[[i]][['Phylum']], 'Phylum', 'Site_Layer') +
+   theme_plex() +
+   ggtitle(paste("% Abundance",names(pseq.rel.filt.list[i]),' Phylum')) +
+   theme(legend.position = 'none')
+  p2 <- boxplot.pseq(ps[[i]][['Class']], 'Class', 'Site_Layer') +
+    theme_plex() +
+    ggtitle(paste("% Abundance",names(pseq.rel.filt.list[i]),' Class')) +
+    theme(legend.position = 'none')
+ p3 <-  boxplot.pseq(ps[[i]][['Order']], 'Order', 'Site_Layer') +
+   theme_plex() +
+   ggtitle(paste("% Abundance",names(pseq.rel.filt.list[i]),' Order')) +
+   theme(legend.position = 'none')
+ p4 <-  boxplot.pseq(ps[[i]][['Family']], 'Family', 'Site_Layer') +
+   theme_plex() +
+   ggtitle(paste("% Abundance",names(pseq.rel.filt.list[i]),' Family')) +
+   theme(legend.position = 'none')
+ p5 <-  boxplot.pseq(ps[[i]][['Genus']], 'Genus', 'Site_Layer') +
+   theme_plex() +
+   ggtitle(paste("% Abundance",names(pseq.rel.filt.list[i]),' Genus')) +
+   theme(legend.position = 'none')
+  print(p1)
+  print(p2)
+  print(p3)
+  print(p4)
+  print(p5)
+}
+p5
+```
+
+```{r prep for circus plot 1}
+# set taxa level and phyloseq object according to Kingdom
+Rank = "Family" # to group
+Rank2 = "Order" # to add name (above the Rank)
+GroupBy = "Habitat_Layer"
+physeq = pseq.filt.list[[3]] # change the number (1-3)
+
+ps.melt <- physeq %>%
+  #tax_glom(taxrank = Rank) %>%                     # agglomerate at 'Rank' level
+  psmelt.dplyr() %>%                                         # Melt to long format
+  arrange(Rank)                                     # arrange by 'Rank'
+#  columns <- c(Rank,GroupBy)
+
+circus.df <- ps.melt %>%  
+ # filter(Class == "Stramenopiles") %>%
+  # if choose phylum as Rank, skip this line
+  mutate("{Rank}" := paste(.data[[Rank2]], .data[[Rank]], sep = "_")) %>%
+  # group by Rank and Group
+  # {{Rank}} for function - to wrap the function arguments 
+  # .data[[Rank]] for string inputs
+  group_by(.data[[GroupBy]], .data[[Rank]]) %>%
+  # summarise and create a column with the relative abundance
+  dplyr::summarise(Abundance = sum(Abundance)) %>%
+  pivot_wider(.data[[Rank]], names_from = .data[[GroupBy]], values_from = Abundance) %>%
+  # reduce function combines (reduces) all of the elements into a single object `x` = sum (e.g. reduce(c(1, 2, 3), `+`))
+  mutate(total = purrr::reduce(select(., -.data[[Rank]]), `+`)) %>% 
+  arrange(desc(total)) 
+
+# get to top 9 in total abundance
+#top <- circus.df  %>% slice_max(total, n= 9) 
+top <- circus.df  %>% slice_max(total, n= 15) 
+
+# make another data frame with the others taxa
+no_top <- circus.df %>% anti_join(top) %>% # to make a complete dataframe use bind_rows()
+  summarise(.,
+        across(where(is.numeric), sum),
+        across(where(is.character), ~"others"))
+
+# add to the first dataframe
+circus.df.plot <- bind_rows(top,no_top) %>%
+# map function to map each column to the function you mention.
+# map_at(c("a", "b", "c"), ~./sum(.)) %>% 
+  map_if(is.numeric, ~./sum(.)) %>%
+  as.data.frame()  %>%
+  select(-total) %>%
+  column_to_rownames({{Rank}})
+```
+
+
+```{r prep for circus plot - archaea}
+# for Archaea only
+circus.df.plot <- circus.df %>% 
+  map_if(is.numeric, ~./sum(.)) %>%
+  as.data.frame()  %>%
+  select(-total) %>%
+  column_to_rownames({{Rank}})
+```
+
+
+```{r circus plot table}
+# save a table
+kingdom <- ps.melt %>% select(Kingdom) %>% pull %>% unique
+to_save <- circus.df.plot %>%
+  rownames_to_column({{Rank1}}) %>%
+          mutate(across(is.numeric, ~. *100),
+          across(is.numeric, ~ round(.,2)))
+write.csv(to_save, 
+          paste0('C:/Users/rrocha/Documents/R/phd/2018/output/plots/all/composition/circus/circus_',{{kingdom}},"_",{{Rank2}},"_",{{Rank}},"_table",".csv"))
+```
+
+
+```{r circus plot}
+
+# set colors
+#library(RColorBrewer)
+colourCount <- circus.df.plot %>% row.names() %>% n_distinct()
+# colourCount <-length(unique(ps.glom[,length(ps.glom)]))
+getPalette <- colorRampPalette(brewer.pal(colourCount, "Paired"))
+grid.col <- circus.df.plot %>% rownames_to_column('taxa') %>%
+  add_column(col = getPalette(colourCount)) %>%
+  pull(col, taxa)
+grid.col <- c(grid.col, cols_hab_layer)
+
+# prep
+mat <- as.matrix(circus.df.plot)
+
+# save as svg 
+svg(filename=, 
+          paste0('C:/Users/rrocha/Documents/R/phd/2018/output/plots/all/composition/circus/circus_',{{kingdom}},"_",{{Rank}},".svg"), 
+    width=11, # inches ( = x*144 pixels)
+    height=6)
+
+# SVG sizes are in inches, not pixels
+#res <- 144
+#svglite::svglite('C:/Users/rrocha/Documents/R/phd/2018/output/plots/all/composition/circus/test.svg', width = 1584/res, height = 864/res)
+
+# set plotting area
+par(xpd=NA) # or par(xpd=TRUE) to enable things to be drawn outside the plot region.
+
+# Basic circus graphic parameters
+circos.par(start.degree = 115, gap.after = c(rep(2, nrow(mat)-1), 10, rep(2, ncol(mat)-1), 10))
+
+# script
+chordDiagram(mat, grid.col = grid.col, directional = 1, direction.type = c("diffHeight", "arrows"),
+             link.arr.type = "big.arrow", annotationTrack = c("grid"), scale = FALSE)
+
+# axis and lables 
+circos.track(track.index = 1, panel.fun = function(x, y) {
+  xlim = get.cell.meta.data("xlim")
+  ylim = get.cell.meta.data("ylim")
+  sector.name = get.cell.meta.data("sector.index")
+  xplot = get.cell.meta.data("xplot")
+  circos.points(x = x, y = y, pch = "·")
+  #plot labels
+  circos.text(mean(xlim), y= 3 ,sector.name, facing = "reverse.clockwise", niceFacing = TRUE, adj = aa, cex = 1)
+  #plot axis
+  circos.axis(labels.cex=0.6, direction = "outside")
+ 
+}, bg.border = NA)  # here set bg.border to NA is important
+
+#par(mfrow=c(1,1)) # reset plotting area
+
+dev.off()
+
+# clean plotting area
+circos.clear()
+
+# testar
+#https://stackoverflow.com/questions/26292484/programming-in-r-bubble-chart-visualization
+#ggplot(test1, aes(x = origin, y = destination, size = frequencies)) + geom_point()
+```
+
+```{r circus plot 2}
+# to analyze in more details use the strings bellow
+# data prep 
+Rank = "Order" # rank to be filtered
+Rank1 = "Family" # to name (below the Rank)
+GroupBy = "Habitat_Layer"
+physeq = pseq.filt.list[[3]]
+# let's say we want to look at the following taxa
+to_filter = c("Ochrophyta")
+to_filter = c("Proteobacteria|Bacteroidota|Actinobacteriota") # this way to filter 
+taxa.to.filter = to_filter
+
+ps.melt1 <- physeq %>%
+  #tax_glom(taxrank = Rank1) %>%                     # agglomerate at 'Rank' level
+  psmelt.dplyr() %>%                                         # Melt to long format
+  arrange({{Rank}})                                     # arrange by 'Rank'
+
+ps.melt <- ps.melt1 %>% filter(str_detect(.data[[Rank]], {{taxa.to.filter}}))
+ps.melt <- ps.melt %>% unite({{Rank1}}, Rank, Rank1, sep = "_", remove = FALSE)
+
+circus.df <- ps.melt %>%  
+  # group by Rank and Group
+  group_by(.data[[GroupBy]], .data[[Rank1]]) %>% 
+  # summarise and create a column with the relative abundance
+  dplyr::summarise(Abundance = sum(Abundance)) %>%
+  pivot_wider(.data[[Rank1]], names_from = .data[[GroupBy]], values_from = Abundance) %>%
+  # reduce function combines (reduces) all of the elements into a single object `x` = sum (e.g. reduce(c(1, 2, 3), `+`))
+  mutate(total = reduce(select(., -.data[[Rank1]]), `+`)) %>% 
+  arrange(desc(total)) 
+
+# choose the top taxa in total abundance
+top <- circus.df  %>% slice_max(total, n= 9) 
+top <- circus.df  %>% slice_max(total, n= 15) 
+
+# make another data frame with the others taxa
+no_top <- circus.df %>% anti_join(top) %>% # to make a complete dataframe use bind_rows()
+  summarise(.,
+            across(where(is.numeric), sum),
+            across(where(is.character), ~"others"))
+
+# add to the first dataframe
+circus.df.plot <- bind_rows(top,no_top) %>%
+  # map function to map each column to the function you mention.
+  # map_at(c("a", "b", "c"), ~./sum(.)) %>% 
+  map_if(is.numeric, ~./sum(.)) %>%
+  as.data.frame()  %>%
+  select(-total) %>%
+  column_to_rownames({{Rank1}})
+
+# if there are less than 20 taxa in the data to plot
+circus.df.plot <- circus.df %>%
+  # map function to map each column to the function you mention.
+  # map_at(c("a", "b", "c"), ~./sum(.)) %>% 
+  map_if(is.numeric, ~./sum(.)) %>%
+  as.data.frame()  %>%
+  select(-total) %>%
+  column_to_rownames({{Rank1}})
+```
+
+
+```{r circus plot 2 - table}
+# save a table
+kingdom <- ps.melt1 %>% select(Kingdom) %>% pull %>% unique
+to_save <- circus.df.plot %>%
+  rownames_to_column({{Rank1}}) %>%
+          mutate(across(is.numeric, ~. *100),
+          across(is.numeric, ~ round(.,2)))
+write.csv(to_save, 
+          paste0('C:/Users/rrocha/Documents/R/phd/2018/output/plots/all/composition/circus/circus_',{{kingdom}},"_",{{Rank}},"_",taxa.to.filter,"_filtered_table",".csv"))
+```
+
+
+```{r circus plotting 2}
+# plotting
+# set colors
+#library(RColorBrewer)
+colourCount <- circus.df.plot %>% row.names() %>% n_distinct()
+# colourCount <-length(unique(ps.glom[,length(ps.glom)]))
+getPalette <- colorRampPalette(brewer.pal(12, "Paired"))
+grid.col <- circus.df.plot %>% rownames_to_column('taxa') %>%
+  add_column(col = getPalette(colourCount)) %>%
+  pull(col, taxa)
+grid.col <- c(grid.col, cols_hab_layer)
+
+# prep
+mat <- as.matrix(circus.df.plot)
+
+# clean the plot area
+circos.clear()
+par(xpd=TRUE) # to enable things to be drawn outside the plot region. 
+
+# Basic circos graphic parameters
+circos.par(start.degree = 115, gap.after = c(rep(2, nrow(mat)-1), 10, rep(2, ncol(mat)-1), 10))
+
+# script
+chordDiagram(mat, grid.col = grid.col, directional = 1, direction.type = c("diffHeight", "arrows"),
+             link.arr.type = "big.arrow", annotationTrack = c("grid"), scale = FALSE)
+
+# axis and lables 
+circos.track(track.index = 1, panel.fun = function(x, y) {
+  xlim = get.cell.meta.data("xlim")
+  ylim = get.cell.meta.data("ylim")
+  sector.name = get.cell.meta.data("sector.index")
+  xplot = get.cell.meta.data("xplot")
+  circos.points(x = x, y = y, pch = "·")
+  #plot labels
+  circos.text(mean(xlim), y= 3 ,sector.name, facing = "reverse.clockwise", niceFacing = TRUE, adj = aa, cex = 1)
+  #plot axis
+  circos.axis(labels.cex=0.6, direction = "outside")
+ 
+}, bg.border = NA) # here set bg.border to NA is important
+
+circos.clear()
+
+par(mfrow=c(1,1)) # reset plotting area
+```
+
+
+#### Beta Diversity
+
+Beta diversity analyses were used to evaluate variation in microbial community structure among habitats and water masses and to assess the extent to which observed variation was explained by environmental conditions. Singletons and doubletons were removed from the dataset for beta diversity analyses.
+
+Sequences were clr-transformed using ALDEX2 package. Phyloseq and vegan packages were used to compare beta diversity among samples using distance-based RDA (db-RDA) with Aitchison distance (Euclidean distance on clr-transformed data). Envif was used to evaluate correlations between chemical parameters and microbial community structure among samples according to db-RDA. 
+
+PERMANOVA was performed to check significant differences in beta diversity among habitats and water masses. If perMANOVA found significant differences among groups at the global level, pairwise perMANOVA tests between groups were implemented with Bonferroni significance adjustments to control for multiple pairwise comparisons. Anderson’s permutation of dispersions test (Anderson 2006; Anderson, Ellingsen and McArdle 2006) was used to test for differences in variance of community structure among sample groups (i.e. sites, regions, soil depths). Tukey’s HSD tests were implemented with adjusted P-values for multiple pairwise comparisons if significant differences in dispersion were found among groups. To explore how the cages can impact beta diversity, the same analysis were performed excluding the samples from the ocean and river. 
+
+```{r beta div}
+# RDA on Euclidean distance
+# PS: I changed the function to add aes(shape = Layer) 
+plot_list <- list()
+pseq <- list()
+for (i in seq_along(pseq.clr.list)) {
+  # let's remove some variables
+  pseq[[i]] <- pseq.clr.list[[i]]
+  sample_data(pseq[[i]]) <- sample_data(pseq[[i]]) %>% 
+    data.frame()  %>% 
+    select(-DO, -DO_perc, -NO2) %>% # remove the columns that are autocorrelated 
+    select_if(~!any(is.na(.))) %>% # select columns without NAs
+    select(Sample_ID, Site_Layer, Layer, Temperature:NH4) %>% # select env factors and Site names for the RDA
+    rownames_to_column(var = 'id') %>%
+    mutate(Layer = factor(Layer, levels = c('S','P'))) %>%
+    column_to_rownames(var = 'id')
+  # function to plot  RDA ordination
+  plot_list[[i]] <- contr.ord.pseq(pseq[[i]], "Family", 'Site_Layer')
+  names(plot_list)[i] <- names(pseq.clr.list[i])
+}
+
+# save the significant env factors
+for (i in names(plot_list)) {
+  df <- plot_list[[i]][[3]]
+  write.csv(df, paste0(folder_path,"/data/all/beta_div/env_fit_",i,".csv"))
+}
+
+# plotting ellipses based on K-mean analysis
+# Archaea
+scores.rda <- plot_list[[1]][[1]] +
+  scale_color_manual(values = cols_site_layer)
+km <- scores.rda$data %>% rownames_to_column('Sample_ID') %>%
+  select(Sample_ID, RDA1, RDA2) %>% column_to_rownames('Sample_ID') %>%
+  kmeans(centers= 3, nstart= 5)
+k.arc <- factor(km$cluster)
+p1 <- plot_list[[1]][[1]] + 
+  stat_ellipse(aes(x=RDA1,y=RDA2,group = k.arc),
+      level=0.95, alpha=0.7, type = "norm", linetype = 2) +
+        scale_color_manual(values = cols_site_layer) +
+        theme(legend.position = "none")
+
+# Bacteria
+scores.rda <- plot_list[[2]][[1]] +
+  scale_color_manual(values = cols_site_layer)
+km <- scores.rda$data %>% rownames_to_column('Sample_ID') %>%
+  select(Sample_ID, RDA1, RDA2) %>% column_to_rownames('Sample_ID') %>%
+  kmeans(centers= 3, nstart= 5)
+k.bac <- factor(km$cluster)
+p2 <- plot_list[[2]][[1]] + 
+  stat_ellipse(aes(x=RDA1,y=RDA2, group=k.bac),
+      level=0.95, alpha=0.7, type = "norm", linetype = 2) +
+        scale_color_manual(values = cols_site_layer) +
+        theme(legend.position = "none")
+
+# Eukaryotes
+scores.rda <- plot_list[[3]][[1]] +
+  scale_color_manual(values = cols_site_layer)
+km <- scores.rda$data %>% rownames_to_column('Sample_ID') %>%
+  select(Sample_ID, RDA1, RDA2) %>% column_to_rownames('Sample_ID') %>%
+  kmeans(centers= 3, nstart= 5)
+k.euk <- factor(km$cluster)
+p3 <- plot_list[[3]][[1]] + 
+  stat_ellipse(aes(x=RDA1,y=RDA2,group=k.euk),
+      level=0.95, alpha=0.7, type = "norm", linetype = 2)+
+        scale_color_manual(values = cols_site_layer) +
+        theme(legend.position = "none")
+
+pca.env + p1 + p2 + p3 + 
+  plot_layout(guides = 'collect')
+```
+
+```{r permanova}
+# performing PerMANOVA to test the hypothesis that bacterial communities within each group
+# are more similar to each other than those under other groups. 
+# perform PerMANOVA using Euclidean distances (for RDA)
+# Generate distance matrix
+# set a seed
+df <- list()
+for (i in seq_along(pseq.clr.list)) {
+  df[[i]] <- permanova.pseq(pseq.clr.list[[i]], 'Habitat_Layer')
+  for (i in seq_along(df)) {
+    write.csv(df[[i]], paste0('C:/Users/rrocha/Documents/R/phd/2018/output/data/all/beta_div/beta_div_habitat_layer_',names(df[i]),names(pseq.clr.list[i]),'.csv'))
+    
+  }
+}
+
+# keep the environment tidy
+rm(list=setdiff(ls(), c('seed',"meta","OTUdf",'pseq.all', 'pseq.list', 'TAXdf', 'TAX.table',
+                        'pseq.clr.list', 'pseq.filt.list','pseq.rel.filt.list','cols_site_layer', 'cols_layer')))
+source('~/R/phd/2018/script/chapter2/my_functions.R')
+source('~/R/phd/2018/script/chapter2/theme_publication.R')
+```
+
+#### Taxonomic Analysis (Diffrential Abundance with Deseq2)
+
+Diffrential abundance analysis was performed for microbial OTUs between diffrent habitats and water masses. Differential abundance analysis was performed for microbial OTUs between significantly different wetland regions and soil depths (according to perMANOVA results with all microbial samples included). OTUs which did not appear in at least twice within 10% of samples were excluded. And OTUs with p <0.001 were omitted from further exploration.
+
+```{r DA - prep data}
+# prep the data files
+pseq <- pseq.filt.list[[3]] # 1 for archaea; 2 for bacteria; and 3 for eukatyotes
+# meta data
+meta.pseq <- pseq %>% sample_data() %>% as.data.frame()
+```
+
+
+```{r DA}
+# make a dataframe with all possible combinations
+comb.vct <- meta.pseq %>% 
+  group_modify(~combn(unique(.x$Habitat_Layer), 2)) %>% 
+  data.table::as.data.table() %>% 
+  as.data.frame()
+
+# sets factors up -> log2FoldChange > 0 means it is more relatively abundant within the first factor and < 0 means it is more within the second factor
+# So, a log2 fold change of 1.5 means that the gene’s expression is increased in the first factor by a multiplicative factor of 2^1.5 ≈ 2.82.
+# a LFC of > 4  represents a 16-fold increasing or decreasing in expression (2^4 = 16)
+# make vactors of each combination to be used in results() function as contrast
+
+# using purrr
+str_deseq <- comb.vct %>% 
+  map2(., comb.vct, ~c("Habitat_Layer", .y) ) %>% 
+  set_names(.,nm = map2(.x = .,comb.vct, ~str_c(.y,  collapse = "_vs_")))
+
+#set_names(., nm = map(.x = ., ~glue("gear_{first(.x$gear)}_carb_{first(.x$carb)}") ) )
+# https://community.rstudio.com/t/using-purrr-to-rename-list-objects-in-a-list-of-tibbles-based-on-the-content-of-those-tibbles/30726
+
+# create a list of pseq objects with pairwise comparisons 
+pseq.deseq.list <- list()
+for (i in seq(length(str_deseq))) {
+  pseq.deseq.list[[i]] <-  pseq %>% subset_samples(Habitat_Layer== comb.vct %>% pull(i) %>% dplyr::first()| Habitat_Layer== comb.vct %>% pull(i) %>% dplyr::last())
+  # set model first vs last
+  #sets it up so that the first factor will be on the bottom, so > 0 means it is higher in last < 0 means higher in first
+  sample_data(pseq.deseq.list[[i]])$Habitat_Layer <- factor(sample_data(pseq.deseq.list[[i]])$Habitat_Layer, levels = c(comb.vct %>% pull(i) %>% dplyr::first(), comb.vct %>% pull(i) %>% dplyr::last()))
+  names(pseq.deseq.list)[[i]] <- names(str_deseq)[[i]]
+}
+
+# get tax table to be used latter
+tax_table_deseq <- pseq %>% tax_table() %>% as.data.frame() %>% rownames_to_column('OTU')
+# to be used latter
+kingdom <- tax_table_deseq %>% pull(Kingdom) %>% unique()
+
+# set colors
+#library(RColorBrewer)
+colourCount <- tax_table_deseq %>% select(Phylum) %>% n_distinct()
+# colourCount <-length(unique(ps.glom[,length(ps.glom)]))
+getPalette <- colorRampPalette(brewer.pal(n = 8, "Dark2"))
+grid.colors <- tax_table_deseq %>% select(Phylum) %>% 
+  unique() %>%
+  add_column(col = getPalette(colourCount)) %>%
+  pull(col, Phylum) 
+
+#cut alpha level at 0.05. We might want to change this later to higher level of significance if we get heaps of otu responding
+# alpha can be changed to 0.005  or 0.01 if necessary
+# alpha = 0.05
+alpha = 0.001
+lfc = 2 # lfcThreshold = 2, 2^2 = 4, (log2(4) = lfc). It tests for OTUs that show significant effects of treatment on 
+        # gene counts more than quadrupling or less than quartering, because 2^2=4.
+
+#set up model 
+# sets it up so that the first factor will be on the bottom, so > 0 means it is higher in the second factor < 0 means higher in first factor
+# sample_data(pseq.filt.list[[2]])$Habitat_Layer <- factor(sample_data(pseq.filt.list[[2]])$Habitat_Layer, levels = c("ocean_S","MH_S","MH_P","GR_S"))
+
+# run deseq2
+results_deseq_list <- list()
+for (i in seq(length(pseq.deseq.list))) {
+  results_deseq_list[[i]] <- phyloseq_to_deseq2(pseq.deseq.list[[i]], ~Habitat_Layer) %>% # converts the phyloseq data into a DESeqDataSet with dispersions estimated
+    DESeq2::DESeq(test="Wald", fitType="parametric") %>%
+   # DESeq2::results(lfcThreshold = lfc, alpha = alpha, altHypothesis = "greaterAbs") %>%
+    # or to shrink log fold changes association with condition (for ranking)
+    DESeq2::lfcShrink(coef=2, type="apeglm") %>%
+    as.data.frame() %>% rownames_to_column('OTU') %>% 
+    filter(padj < alpha & abs(log2FoldChange) > 2) %>% # logfoldchange = 2
+    drop_na() %>% left_join(tax_table_deseq) %>% 
+    arrange(desc(log2FoldChange)) %>%
+    mutate(Class = factor(Class,unique(Class))) # order by taxa for plotting
+  names(results_deseq_list)[[i]] <-  names(pseq.deseq.list)[[i]]
+  write.csv(results_deseq_list[[i]], 
+            paste0(folder_path,'data/all/deseq/deseq_',kingdom,"_",names(results_deseq_list)[[i]],'.csv'))
+}
+```
+
+
+```{r plot DA}
+# plotting
+deseq_plot_list <- list()
+for (i in seq(length(results_deseq_list))) {
+  DA[[i]] <- ggplot(results_deseq_list[[i]], aes(y = Class, x = log2FoldChange)) + 
+    geom_vline(xintercept = 0.0, color = "gray", size = 1) +
+    geom_point(aes(fill = Phylum), size=3.5, color="black",shape = 21, alpha = 0.7) + 
+    theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust = 0.5)) +
+    #scale_fill_jco()
+    scale_fill_manual(values = grid.colors) +
+    
+    labs(x = "log2-Fold Change") +
+   # xlim(-10,10) +
+    theme_Publication_3()
+  
+  # annotate groups in the plot
+  group1 <- comb.vct %>% pull(i) %>% dplyr::first() # < 0 in the first factor
+  group2 <- comb.vct %>% pull(i) %>% dplyr::last()  # > 0 in the last factor
+  grob <- grobTree(textGrob(group1, x=0.1,  y=0.95, hjust=0,
+                            gp=gpar(col = "darkgrey", fontsize=19, fontface="italic")))
+  grob2 <- grobTree(textGrob(group2, x=0.1,  y=0.95, hjust=0,
+                             gp=gpar(col = "darkgrey", fontsize=19, fontface="italic")))
+  
+  # Plot
+  deseq_plot_list[[i]] <- DA[[i]]  + 
+    annotation_custom(grob, xmax = -1) + # < 0 in the first factor
+    annotation_custom(grob2, xmin = 1) +# > 0 in the last factor
+    theme(legend.position = "none")
+  names(deseq_plot_list)[[i]] <-  names(results_deseq_list)[[i]]
+  
+}
+
+# plot the list using patchwork
+wrap_plots(deseq_plot_list) 
+
+# legend 
+legend.list.plot <- tax_table_deseq %>% select(Phylum) %>% 
+  unique() %>% 
+  add_column(b = 1:colourCount) %>%
+  add_column(col = getPalette(colourCount)) %>%
+  ggplot(aes(b, fill = Phylum)) + 
+  geom_bar(alpha = 0.7) +
+  scale_fill_manual(values = grid.colors) +
+  guides(fill=guide_legend(ncol=4) ) +
+  theme(legend.margin=margin(0,0,0,0),
+        legend.box.margin=margin(-10,-10,-10,-10)) +
+ theme(legend.position = "bottom")
+
+legend.list <- ggpubr::get_legend(legend.list.plot)
+ggpubr::as_ggplot(legend.list)
+```
+
+
+```{r bar plot all otu DA}
+
+# make a data frame for each group with all sig OTUs that are common for all comparisons
+only_sig_group <- list()
+for (i in meta.pseq %>% pull(Habitat_Layer) %>% unique()) {
+  OTU_sig1 <- results_deseq_list %>%
+  tibble(nm = names(.)) %>% 
+    unnest(cols = c(.)) %>% 
+    filter(str_detect(nm, paste0(i,"_"))) %>%
+    filter(log2FoldChange < -2) %>%
+    distinct(OTU, .keep_all = TRUE) 
+  OTU_sig2 <- results_deseq_list %>%
+    tibble(nm = names(.)) %>% 
+    unnest(cols = c(.)) %>% 
+    filter(str_detect(nm, paste0("_",i))) %>%
+    filter(log2FoldChange > 2) %>%
+    distinct(OTU, .keep_all = TRUE) 
+  
+  only_sig_group[[i]]  <- OTU_sig1 %>% 
+    full_join(OTU_sig2)  %>%
+    distinct(OTU, .keep_all = TRUE) 
+
+write.csv(only_sig_group[[i]], paste0(folder_path,'data/all/deseq/onlySIG_OTU_',kingdom,"_",i,".csv"))
+}
+
+# plotting using purrr
+taxon = "Family" # choose a taxonomic level
+deseq.otus.plots <- only_sig_group %>% 
+  # make a new column in each element with the name of the element for plot title
+  map2(., names(.), ~.x %>% mutate(ID = .y)) %>% 
+  # rename elements of the list
+  set_names(.,
+            nm = map(.x = ., 
+                     ~str_c(kingdom,taxon,.x$ID %>% unique(), sep = "_"))) %>%
+  # map for plotting
+  map(., 
+      ~group_by(.,Phylum, .data[[taxon]],ID) %>%
+        dplyr::count(OTU) %>%
+        summarise(n = sum(n)) %>%
+        ungroup() %>%
+        filter(.data[[taxon]] != "unknown") %>%
+    #   arrange(desc(n)) %>%
+        mutate('{taxon}' := fct_reorder(.data[[taxon]],n)) %>% 
+      # select only the op 10 in n
+      #  dplyr::slice_max(n, n=15) %>%
+      ggplot(aes(x = .data[[taxon]], y=n ,fill = Phylum)) + 
+        geom_bar(stat = "identity" , alpha = 0.7) +
+        coord_flip() +
+        labs(y = "number of relatively abundant zOTUs") +
+        scale_fill_manual(values = grid.colors) +
+        theme_Publication_3() +
+        theme(legend.position = "bottom")+
+        guides(fill=guide_legend(nrow=2)) +
+        ggtitle(paste(kingdom," | ",taxon," - ", .x$ID %>% unique()))
+      )
+
+wrap_plots(deseq.otus.plots) 
+```
+
+```{r bar plot unique otus DA}
+# plotting only dif abundant unique OTUs for each site
+taxon = "Family" # choose a taxonomic level) 
+taxon2 = "Class"
+
+# set colors
+#library(RColorBrewer)
+colourCount <- tax_table_deseq %>% select(.data[[taxon2]]) %>% n_distinct()
+# colourCount <-length(unique(ps.glom[,length(ps.glom)]))
+getPalette <- colorRampPalette(brewer.pal(n = 12, "Paired"))
+#getPalette <- colorRampPalette(brewer.pal(n = 8, "Dark2"))
+grid.colors <- tax_table_deseq %>% select(.data[[taxon2]]) %>% 
+  unique() %>%
+  add_column(col = getPalette(colourCount)) %>%
+  pull(col, taxon2) 
+
+list.otu <- only_sig_group %>% 
+  # make a new column in each element with the name of the element for plot title
+  map2(., names(.), ~.x %>% mutate(ID = .y))
+
+b_MH_P <- list.otu$MH_P
+b_ocean <- list.otu$ocean_S
+b_MH_S <- list.otu$MH_S
+b_GR <- list.otu$GR_S
+
+# MH_P
+all.otu <- b_MH_S %>% full_join(b_GR, by = "OTU") %>% full_join(b_ocean, by = "OTU") %>% pull(OTU) %>% unique() 
+k.name <- b_MH_P %>% pull(ID) %>% unique
+p1 <- b_MH_P %>% 
+  filter(!OTU %in% all.otu) %>%
+  group_by(.,.data[[taxon2]], .data[[taxon]],ID) %>%
+  dplyr::count(OTU) %>%
+  summarise(n = sum(n)) %>%
+  ungroup() %>%
+  #filter(.data[[taxon]] != "unknown") %>%
+  #   arrange(desc(n)) %>%
+  mutate('{taxon}' := fct_reorder(.data[[taxon]],n)) %>% 
+  # select only the op 10 in n
+  dplyr::slice_max(n, n=15) %>%
+  ggplot(aes(x = .data[[taxon]], y=n ,fill = .data[[taxon2]])) + 
+  geom_bar(stat = "identity" , alpha = 0.7) +
+  coord_flip() +
+  labs(y = "number of unique relatively abundant zOTUs") +
+  scale_fill_manual(values = grid.colors) +
+  theme_Publication_3() +
+  theme(legend.position = "bottom")+
+  guides(fill=guide_legend(nrow=3)) +
+  ggtitle(paste(kingdom," | ",taxon," - ", k.name ))
+
+# MH_S
+all.otu <- b_MH_P %>% full_join(b_GR, by = "OTU") %>% full_join(b_ocean, by = "OTU") %>% pull(OTU) %>% unique() 
+k.name <- b_MH_S %>% pull(ID) %>% unique
+p2 <- b_MH_S %>% 
+  filter(!OTU %in% all.otu) %>%
+  group_by(.,.data[[taxon2]], .data[[taxon]],ID) %>%
+  dplyr::count(OTU) %>%
+  summarise(n = sum(n)) %>%
+  ungroup() %>%
+ # filter(.data[[taxon]] != "unknown") %>%
+  #   arrange(desc(n)) %>%
+  mutate('{taxon}' := fct_reorder(.data[[taxon]],n)) %>% 
+  # select only the op 10 in n
+  dplyr::slice_max(n, n=15) %>%
+  ggplot(aes(x = .data[[taxon]], y=n ,fill = .data[[taxon2]])) + 
+  geom_bar(stat = "identity" , alpha = 0.7) +
+  coord_flip() +
+  labs(y = "number of unique relatively abundant zOTUs") +
+  scale_fill_manual(values = grid.colors) +
+  theme_Publication_3() +
+  theme(legend.position = "bottom")+
+  guides(fill=guide_legend(nrow=3)) +
+  ggtitle(paste(kingdom," | ",taxon," - ", k.name ))
+
+# GR
+all.otu <- b_MH_S %>% full_join(b_MH_P, by = "OTU") %>% full_join(b_ocean, by = "OTU") %>% pull(OTU) %>% unique() 
+k.name <- b_GR %>% pull(ID) %>% unique
+p3 <- b_GR %>% 
+  filter(!OTU %in% all.otu) %>%
+  group_by(.,.data[[taxon2]], .data[[taxon]],ID) %>%
+  dplyr::count(OTU) %>%
+  summarise(n = sum(n)) %>%
+  ungroup() %>%
+ # filter(.data[[taxon]] != "unknown") %>%
+  #   arrange(desc(n)) %>%
+  mutate('{taxon}' := fct_reorder(.data[[taxon]],n)) %>% 
+  # select only the op 10 in n
+  dplyr::slice_max(n, n=15) %>%
+  ggplot(aes(x = .data[[taxon]], y=n ,fill = .data[[taxon2]])) + 
+  geom_bar(stat = "identity" , alpha = 0.7) +
+  coord_flip() +
+  labs(y = "number of unique relatively abundant zOTUs") +
+  scale_fill_manual(values = grid.colors) +
+  theme_Publication_3() +
+  theme(legend.position = "bottom")+
+  guides(fill=guide_legend(nrow=3)) +
+  ggtitle(paste(kingdom," | ",taxon," - ", k.name ))
+
+# ocean
+all.otu <- b_MH_P %>% full_join(b_GR, by = "OTU") %>% full_join(b_MH_S, by = "OTU") %>% pull(OTU) %>% unique() 
+k.name <- b_ocean %>% pull(ID) %>% unique
+p4 <- b_ocean %>% 
+  filter(!OTU %in% all.otu) %>%
+  group_by(.,.data[[taxon2]], .data[[taxon]],ID) %>%
+  dplyr::count(OTU) %>%
+  summarise(n = sum(n)) %>%
+  ungroup() %>%
+  #filter(.data[[taxon]] != "unknown") %>%
+  #   arrange(desc(n)) %>%
+  mutate('{taxon}' := fct_reorder(.data[[taxon]],n)) %>% 
+  # select only the op 10 in n
+  #dplyr::slice_max(n, n=15) %>%
+  ggplot(aes(x = .data[[taxon]], y=n ,fill = .data[[taxon2]])) + 
+  geom_bar(stat = "identity" , alpha = 0.7) +
+  coord_flip() +
+  labs(y = "number of unique relatively abundant zOTUs") +
+  scale_fill_manual(values = grid.colors) +
+  theme_Publication_3() +
+  theme(legend.position = "bottom")+
+  guides(fill=guide_legend(nrow=3)) +
+  ggtitle(paste(kingdom," | ",taxon," - ", k.name ))
+  
+wrap_plots(p1+p2+p3+p4)
+
+```
+
+
+#### Network Analysis
+
+To explore relationships between microbial sub-communities and individual OTUs to environmental variables, Weighted Correlation Network Analysis (WGCNA) was implemented on OTU relative abundances using the WGCNA package (Langfelder and Horvath 2008; Langfelder and Horvath 2012), executed as previously described (Guidi et al. 2016; Henson et al. 2018) with modifications.
+
+Sparse partial least squares analysis: In order to directly associate microbial lineages to environmental factors (regression mode), we used sparse partial least square (sPLS) as implemented in the R package mixOmics.
+
+A network of pairwise taxon-taxon co-occurrence (putative interactions) from clr-transformed microbiome compositions was inferred to understand and visualize associations among microbial communities. This analysis was performed using Speac-easi pacakge.
+
+```{r network}
+#install.packages(c("matrixStats", "Hmisc", "splines", "foreach", "doParallel", "fastcluster", "dynamicTreeCut", "survival"))
+#source("http://bioconductor.org/biocLite.R")
+#biocLite(c("GO.db", "preprocessCore", "impute"))
+
+
+
+# set default plot margin area
+#par(mar=c(5.1, 4.1, 4.1, 2.1), mgp=c(3, 1, 0), las=0)
+```
+
+
+## Results
