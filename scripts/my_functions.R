@@ -160,11 +160,8 @@ perform_anova <- function(df,meta_table,grouping_column,pValueCutoff){
   return(out)
 }
 
-###############################################3
-#################################################
-################################################3
-
-
+###############################################
+###############################################
 #'Alpha diversity measure
 #'
 #'This function calculates alpha diversity of provided community data using
@@ -854,49 +851,241 @@ scale.meta <- function(physeq,type="scale",select.variables=NULL){
 
 
 # This function is not part of microbiomeSeq
-abund.table <- function(pseq, taxo, stats = FALSE) {
-  otu_df <- pseq %>% otu_table() %>% as.data.frame() %>% rownames_to_column(var = "otu_id")
-  taxo_df <- pseq %>% tax_table() %>% as.data.frame() %>% rownames_to_column(var = "otu_id") %>%
-    mutate(Family.Genus = paste(Family, Genus, sep = "_")) 
-  otu_df <- left_join(otu_df, taxo_df)
-  x <- colnames(otu_table(pseq))
-  otu_df <- gather(otu_df, "Sample", "Abundance", x)
-  df <- otu_df %>% 
-    group_by_at(vars(all_of(taxo), Sample)) %>%
-    summarise(Abundance = sum(Abundance)) %>% 
-    ungroup() %>% 
-    spread(Sample, Abundance) %>%
-    as.data.frame() %>%
-    'rownames<-'(.[,1]) %>%
-    select(-1)
-  if(stats == TRUE){ # return a table with statistics summary
-    df.stats <- df  %>%  
-      mutate(sum = rowSums(.[1:length(.)]),
-             mean = rowMeans(.[1:length(.)]),
-             stdev= matrixStats::rowSds(as.matrix(.[1:length(.)])),
-             freq = round(100*rowSums(.[1:length(.)])/sum(rowSums(.[1:length(.)])),2)) %>%
-      select(mean, stdev, freq) 
-    row.names(df.stats) <- row.names(df) 
-    df.stats <- df.stats  %>% rownames_to_column(var = "taxa") %>% arrange(desc(freq))
-    return(df.stats)
-  }else{
-    return(df)
-  }
-  rm(otu_df,taxo_df,x)
+#abund.table <- function(pseq, taxo, stats = FALSE) {
+#  otu_df <- pseq %>% otu_table() %>% as.data.frame() %>% rownames_to_column(var = "otu_id")
+#  taxo_df <- pseq %>% tax_table() %>% as.data.frame() %>% rownames_to_column(var = "otu_id") %>%
+#    mutate(Family.Genus = paste(Family, Genus, sep = "_")) 
+#  otu_df <- left_join(otu_df, taxo_df)
+#  x <- colnames(otu_table(pseq))
+#  otu_df <- gather(otu_df, "Sample", "Abundance", x)
+#  df <- otu_df %>% 
+#    group_by_at(vars(all_of(taxo), Sample)) %>%
+#    summarise(Abundance = sum(Abundance)) %>% 
+#    ungroup() %>% 
+#    spread(Sample, Abundance) %>%
+#    as.data.frame() %>%
+#    'rownames<-'(.[,1]) %>%
+#    select(-1)
+#  if(stats == TRUE){ # return a table with statistics summary
+#    df.stats <- df  %>%  
+#      mutate(sum = rowSums(.[1:length(.)]),
+#             mean = rowMeans(.[1:length(.)]),
+#             stdev= matrixStats::rowSds(as.matrix(.[1:length(.)])),
+#             freq = round(100*rowSums(.[1:length(.)])/sum(rowSums(.[1:length(.)])),2)) %>%
+#      select(mean, stdev, freq) 
+#    row.names(df.stats) <- row.names(df) 
+#    df.stats <- df.stats  %>% rownames_to_column(var = "taxa") %>% arrange(desc(freq))
+#    return(df.stats)
+#  }else{
+#    return(df)
+#  }
+#  rm(otu_df,taxo_df,x)
+#}
+
+
+# ------- Abundance Table  ----
+abund.table <- function(ab.table, TAXdf, taxo) {
+  df <-  ab.table %>% 
+    rownames_to_column('otu') %>% 
+    pivot_longer(!otu, names_to = "Sample", values_to = "Abundance") %>%
+    left_join(TAXdf %>% rownames_to_column('otu')) %>%
+    group_by(.data[[taxo]], Sample) %>%
+    summarise(Abundance = sum(Abundance)) %>%
+    pivot_wider(names_from = 'Sample', values_from = 'Abundance') %>%
+    column_to_rownames(taxo)
+  return(df)
 }
 
-###########################################
-# ------- FASTER PSMELT - using dplyr ----
-###########################################
+abund.table.pseq <- function(pseq, taxo) {
+  ab.table <- pseq %>% 
+    microbiomeutilities::get_tibble('otu_table') %>%
+    column_to_rownames("column_id")
+  TAXdf <-  pseq %>% 
+    microbiomeutilities::get_tibble('tax_table') %>%
+    column_to_rownames("column_id")
+  df <-  ab.table %>% 
+    rownames_to_column('otu') %>% 
+    pivot_longer(!otu, names_to = "Sample", values_to = "Abundance") %>%
+    left_join(TAXdf %>% rownames_to_column('otu')) %>%
+    group_by(.data[[taxo]], Sample) %>%
+    summarise(Abundance = sum(Abundance)) %>%
+    pivot_wider(names_from = 'Sample', values_from = 'Abundance') %>%
+    column_to_rownames(taxo) %>%
+    t() %>%
+    data.frame()
+  return(df)
+}
 
-psmelt.dplyr = function(physeq) {
+#------------ Frequency table -------------------
+
+# Summarize taxa (https://github.com/joey711/phyloseq/issues/418)
+
+# to summarize a group and get frequency table based on all community
+summarize_taxa = function(physeq, Rank, GroupBy = NULL, arrange = FALSE, top_rank = NULL){
+  Rank <- Rank[1]
+  if(!Rank %in% rank_names(physeq)){
+    message("The argument to `Rank` was:\n", Rank,
+            "\nBut it was not found among taxonomic ranks:\n",
+            paste0(rank_names(physeq), collapse = ", "), "\n",
+            "Please check the list shown above and try again.")
+  }
+  if(!is.null(GroupBy)){
+    GroupBy <- GroupBy[1]
+    if(!GroupBy %in% sample_variables(physeq)){
+      message("The argument to `GroupBy` was:\n", GroupBy,
+              "\nBut it was not found among sample variables:\n",
+              paste0(sample_variables(physeq), collapse = ", "), "\n",
+              "Please check the list shown above and try again.")
+    }
+  }
+  # Start with psmelt
+  ps.melt <- physeq %>%
+    microbiome::transform("compositional") %>%
+    #speedyseq::tax_glom(taxrank = Rank) %>%                     # agglomerate at 'Rank' level
+    psmelt.dplyr() %>%                                         # Melt to long format
+    rename(RelativeAbundance = Abundance)                                     # arrange by 'Rank'
+  if(!is.null(GroupBy)){
+    # Add the variable indicated in `GroupBy`, if provided.
+    summ.df <- ps.melt %>% 
+      # group by Rank and Group
+      group_by(.data[[GroupBy]], .data[[Rank]]) %>% 
+      # summarise and create a column with the relative abundance
+      dplyr::summarise(meanRA = mean(RelativeAbundance),
+                       sdRA = sd(RelativeAbundance),
+                       minRA = min(RelativeAbundance),
+                       maxRA = max(RelativeAbundance))
+    
+  }else{# only with 'Rank'
+    Nsamples = nsamples(physeq)
+    summ.df <- ps.melt %>%
+      group_by(.data[[Rank]]) %>%
+      dplyr::summarise(meanRA = sum(RelativeAbundance) / Nsamples,
+                       sdRA = sd(RelativeAbundance),
+                       minRA = min(RelativeAbundance),
+                       maxRA = max(RelativeAbundance))
+  }
+  if(arrange == FALSE){
+    return(summ.df)
+  }else{# sort data with the most abundant in the first line
+    summ.df.ar <- summ.df %>% arrange(desc(meanRA), .data[[GroupBy]]) %>%
+      slice_head(n = 5)
+    return(summ.df.ar)
+  }
+  
+}
+
+# to summarize a group and get frequency table based on within specific taxa group
+summarize_by_subtaxa = function(physeq, taxa, Rank, GroupBy){
+  
+  df <- physeq %>%  
+    microbiome::transform("compositional") %>%
+    psmelt.dplyr() %>%
+    rename(RelativeAbundance = Abundance) %>%
+    group_by(Phylum,.data[[GroupBy]], .data[[Rank]]) %>%
+    filter_all(any_vars(. == taxa)) %>%
+    summarise(meanRA = mean(RelativeAbundance),
+              sdRA = sd(RelativeAbundance),
+              minRA = min(RelativeAbundance),
+              maxRA = max(RelativeAbundance)) %>% 
+    arrange(desc(meanRA), .data[[GroupBy]])
+  
+  return(df)
+}
+
+prevalence_table <- function(p, taxa) {
+  t = p %>% 
+    get_tibble("otu_table", column_id = "asv") %>%
+    mutate(TotalAbundance = rowSums(across(where(is.numeric)))) %>%
+    rowwise(asv) %>%
+    mutate(prevalence = sum(c_across(is.numeric) > 0) -1) %>%
+    ungroup() %>%
+    select(asv, TotalAbundance, prevalence) %>%
+    left_join(data.frame(tax_table(p)) %>% 
+                rownames_to_column("asv"))
+  # calulate mean by taxa
+  df = t %>% group_by(.data[[taxa]]) %>%
+    summarise(mean = mean(prevalence),
+              total_abundance = sum(TotalAbundance))
+  
+  return(list(t,df))
+}
+
+
+# Summarize taxa (https://github.com/joey711/phyloseq/issues/418)
+
+# to summarize a group and get frequency table based on all community
+# mutate a column to avoid unknown or uncultered ASVs to be grouped together
+summarize_taxa1 = function(physeq, Rank, GroupBy = NULL, arrange = FALSE, top_rank = NULL){
+  Rank <- Rank[1]
+  if(!Rank %in% rank_names(physeq)){
+    message("The argument to `Rank` was:\n", Rank,
+            "\nBut it was not found among taxonomic ranks:\n",
+            paste0(rank_names(physeq), collapse = ", "), "\n",
+            "Please check the list shown above and try again.")
+  }
+  if(!is.null(GroupBy)){
+    GroupBy <- GroupBy[1]
+    if(!GroupBy %in% sample_variables(physeq)){
+      message("The argument to `GroupBy` was:\n", GroupBy,
+              "\nBut it was not found among sample variables:\n",
+              paste0(sample_variables(physeq), collapse = ", "), "\n",
+              "Please check the list shown above and try again.")
+    }
+  }
+  # Start with psmelt
+  ps.melt <- physeq %>%
+    #speedyseq::tax_glom(taxrank = Rank) %>%                     # agglomerate at 'Rank' level
+    psmelt.dplyr() %>%                                         # Melt to long format
+    arrange(Rank)                                     # arrange by 'Rank'
+  if(!is.null(GroupBy)){
+    # Add the variable indicated in `GroupBy`, if provided.
+    summ.df <- ps.melt %>% 
+      mutate(!!Rank := str_c(Phylum, .data[[Rank]], sep = "_")) %>%
+      # group by Rank and Group
+      group_by(.data[[GroupBy]], .data[[Rank]]) %>% 
+      # summarise and create a column with the relative abundance
+      dplyr::summarise(mean_Abundance = mean(Abundance), total_Abundance = sum(Abundance)) %>%
+      mutate(mean_freq_by_group = paste0(round(100 * mean_Abundance / sum(mean_Abundance), 2), "%")) %>%
+      ungroup() %>%
+      mutate(total_freq = paste0(round(100 * total_Abundance / sum(total_Abundance), 2), "%"))
+    
+  }else{# only with 'Rank'
+    summ.df <- ps.melt %>%
+      group_by(.data[[Rank]]) %>%
+      dplyr::summarise(Abundance = sum(Abundance))  %>%
+      mutate(freq_by_group = paste0(round(100 * Abundance / sum(Abundance), 2), "%")) %>%
+      ungroup() %>%
+      mutate(freq = paste0(round(100 * Abundance / sum(Abundance), 2), '%'))
+  }
+  if(arrange == FALSE){
+    return(summ.df)
+  }else{# sort data with the most abundant in the first line
+    summ.df.ar <- summ.df %>% arrange(desc(Abundance), .data[[GroupBy]]) %>%
+      slice_head(n = 5)
+    return(summ.df.ar)
+  }
+  
+}
+
+# ------- FASTER PSMELT - using dplyr ----
+psmelt.dplyr = function(physeq, glom_by = NULL) {
   sd = data.frame(sample_data(physeq)) %>% rownames_to_column("Sample")
   TT = data.frame(tax_table(physeq)) %>% rownames_to_column("OTU")
-  otu.table = data.frame(otu_table(physeq), check.names = FALSE) %>% rownames_to_column("OTU")
-  otu.table %>%
-    pivot_longer(!OTU, names_to = "Sample", values_to = "Abundance") %>%
-    left_join(sd) %>%
-    left_join(TT) 
+  otu.table = data.frame(otu_table(physeq), check.names = FALSE) %>% 
+    rownames_to_column("OTU")
+  if(!is.null(glom_by)){
+    otu.table %>% 
+      pivot_longer(!OTU, names_to = "Sample", values_to = "Abundance") %>%
+      left_join(TT) %>%
+      group_by(.data[[glom_by]], Sample) %>%
+      summarise(Abundance = sum(Abundance)) %>%
+      left_join(sd) 
+  }else{
+    otu.table %>%
+      pivot_longer(!OTU, names_to = "Sample", values_to = "Abundance") %>%
+      left_join(sd) %>%
+      left_join(TT) 
+  }
 }
 
 #'Local Contribution to Beta Diversity (LCBD)
@@ -930,6 +1119,9 @@ psmelt.dplyr = function(physeq) {
 #'
 #' @export plot_taxa
 #'
+
+
+# ------- BAR PLOTs ---- 
 
 plot_taxa <- function(physeq,taxo,grouping_column,method="hellinger",filename=NULL){
   
@@ -1006,82 +1198,137 @@ plot_taxa <- function(physeq,taxo,grouping_column,method="hellinger",filename=NU
   
 } 
 
-##################################################
-#------------ Frequency table -------------------
-##################################################
-# Summarize taxa (https://github.com/joey711/phyloseq/issues/418)
 
-# to summarize a group and get frequency table based on all community
-summarize_taxa = function(physeq, Rank, GroupBy = NULL, arrange = FALSE, top_rank = NULL){
-  Rank <- Rank[1]
-  if(!Rank %in% rank_names(physeq)){
-    message("The argument to `Rank` was:\n", Rank,
-            "\nBut it was not found among taxonomic ranks:\n",
-            paste0(rank_names(physeq), collapse = ", "), "\n",
-            "Please check the list shown above and try again.")
+
+
+
+
+bar_plot_taxa <- function(physeq,taxo,...){
+  
+  #arrange data for plotting in a format compatible to ggplot
+  ps.glom <- physeq %>%
+    tax_glom(taxrank = taxo) %>%
+    #speedyseq::tax_glom(taxrank = taxo) %>%                     # agglomerate at phylum level
+    psmelt.dplyr() %>% 
+    mutate(!!taxo := case_when(Abundance < 0.001 ~ "< 0.1% abund.",
+                               TRUE ~ as.character(.[[taxo]]))) %>%
+    mutate(!!taxo := fct_reorder(!!sym(taxo), Abundance))
+  
+  # https://dplyr.tidyverse.org/articles/programming.html
+  
+  # plot the data
+  # set color
+  library(RColorBrewer)
+  colourCount <- ps.glom %>% select(!!taxo) %>% n_distinct()
+  # colourCount <-length(unique(ps.glom[,length(ps.glom)]))
+  getPalette <- colorRampPalette(brewer.pal(12, "Paired"))
+  
+  # print Plot
+  p <- ps.glom %>% 
+    # mutate(Class = fct_reorder(.[[taxo]], Abundance)) %>%
+    # p <- ps.glom %>% mutate(Groups = factor(Habitat_Layer, levels = ord_plot2)) %>%
+    #p <- ps.glom %>%
+    ggplot(aes(x = Sample, y = Abundance, fill = !! sym(taxo))) + 
+    geom_bar(stat = "identity") +
+    scale_fill_manual(values = getPalette(colourCount)) +
+    scale_y_continuous(labels = scales::percent) +
+    theme_minimal() +
+    # scale_x_discrete(limits=c(samples.order)) +
+    # Change the labels and Remove x axis title
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    # labs(fill = "Class") +
+    # guides(keywidth = 1, keyheight = 1) + 
+    ylab(glue::glue("Relative Abundance ({taxo} > 1%)"))
+  
+  return(p)
+  
+} 
+
+
+
+
+
+bar_plot_taxa_group <- function(physeq,taxo,grouping_column,color_taxo = NULL,...){
+  
+  #arrange data for plotting in a format compatible to ggplot
+  ps.glom <- physeq %>%
+    tax_glom(taxrank = taxo) %>%
+    #speedyseq::tax_glom(taxrank = taxo) %>%                     # agglomerate at phylum level
+    psmelt.dplyr() %>% 
+    mutate(!!taxo := case_when(Abundance < 0.001 ~ "< 0.1% abund.",
+                               TRUE ~ as.character(.[[taxo]]))) %>%
+    rename(grouping_column = !!grouping_column) %>%
+    mutate(!!taxo := fct_reorder(!!sym(taxo), Abundance))
+  
+  # https://dplyr.tidyverse.org/articles/programming.html
+  
+  # plot the data
+  # set color
+  library(RColorBrewer)
+  colourCount <- ps.glom %>% select(!!taxo) %>% n_distinct()
+  # colourCount <-length(unique(ps.glom[,length(ps.glom)]))
+  getPalette <- colorRampPalette(brewer.pal(12, "Paired"))
+  
+  if(is.null(color_taxo)){
+  
+  # print Plot
+  p <- ps.glom %>% 
+    # mutate(Class = fct_reorder(.[[taxo]], Abundance)) %>%
+    # p <- ps.glom %>% mutate(Groups = factor(Habitat_Layer, levels = ord_plot2)) %>%
+    #p <- ps.glom %>%
+    ggplot(aes_string(x = 'Sample', y = 'Abundance', fill = taxo)) + 
+    geom_bar(stat = "identity") +
+    scale_fill_manual(values = getPalette(colourCount)) +
+    scale_y_continuous(labels = scales::percent) +
+    theme_minimal() +
+    # scale_x_discrete(limits=c(samples.order)) +
+    # Change the labels and Remove x axis title
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    # labs(fill = "Class") +
+    # guides(keywidth = 1, keyheight = 1) + 
+    ylab(glue::glue("Relative Abundance ({taxo} > 0.1%)")) + 
+    facet_grid(~grouping_column, switch = "x", scales = "free_x", space = "free_x") +
+    theme(panel.spacing = unit(0.3, "lines"), 
+          strip.background = element_blank(),
+          strip.placement = "outside",
+          strip.text.x = element_text(hjust = 0.5))
+  
+  return(p)
+  }else{
+    p <- ps.glom %>% 
+      # mutate(Class = fct_reorder(.[[taxo]], Abundance)) %>%
+      # p <- ps.glom %>% mutate(Groups = factor(Habitat_Layer, levels = ord_plot2)) %>%
+      #p <- ps.glom %>%
+      ggplot(aes_string(x = 'Sample', y = 'Abundance', fill = taxo)) + 
+      geom_bar(stat = "identity") +
+      scale_fill_manual(values = color_taxo) +
+      scale_y_continuous(labels = scales::percent) +
+      theme_minimal() +
+      # scale_x_discrete(limits=c(samples.order)) +
+      # Change the labels and Remove x axis title
+      theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+      # labs(fill = "Class") +
+      # guides(keywidth = 1, keyheight = 1) + 
+      ylab(glue::glue("Relative Abundance ({taxo} > 0.1%)")) + 
+      facet_grid(~grouping_column, switch = "x", scales = "free_x", space = "free_x") +
+      theme(panel.spacing = unit(0.3, "lines"), 
+            strip.background = element_blank(),
+            strip.placement = "outside",
+            strip.text.x = element_text(hjust = 0.5))
+    
+    return(p) 
   }
-  if(!is.null(GroupBy)){
-    GroupBy <- GroupBy[1]
-    if(!GroupBy %in% sample_variables(physeq)){
-      message("The argument to `GroupBy` was:\n", GroupBy,
-              "\nBut it was not found among sample variables:\n",
-              paste0(sample_variables(physeq), collapse = ", "), "\n",
-              "Please check the list shown above and try again.")
-    }
-  }
-  # Start with psmelt
-  ps.melt <- physeq %>%
-    #speedyseq::tax_glom(taxrank = Rank) %>%                     # agglomerate at 'Rank' level
-    psmelt.dplyr() %>%                                         # Melt to long format
-    arrange(Rank)                                     # arrange by 'Rank'
-  if(!is.null(GroupBy)){
-    # Add the variable indicated in `GroupBy`, if provided.
-    summ.df <- ps.melt %>% 
-      # group by Rank and Group
-      group_by(.data[[GroupBy]], .data[[Rank]]) %>% 
-      # summarise and create a column with the relative abundance
-      dplyr::summarise(Abundance = sum(Abundance)) %>%
-      ungroup() %>%
-      mutate(freq = paste0(round(100 * Abundance / sum(Abundance), 2), "%"))
-  }else{# only with 'Rank'
-    summ.df <- ps.melt %>%
-      group_by(.data[[Rank]]) %>%
-      dplyr::summarise(Abundance = sum(Abundance)) %>%
-      mutate(freq = paste0(round(100 * Abundance / sum(Abundance), 2), '%'))
-  }
-  if(arrange == FALSE){
-    return(summ.df)
-    }else{# sort data with the most abundant in the first line
-    summ.df.ar <- summ.df %>% arrange(desc(Abundance), .data[[GroupBy]]) %>%
-    slice_head(n = 5)
-    return(summ.df.ar)
-    }
-
-}
-
-# to summarize a group and get frequency table based on within specific taxa group
-summarize_by_subtaxa = function(physeq, taxa, Rank, GroupBy){
-
-total <- physeq %>%  
-  psmelt.dplyr() %>%
-  summarise(Abundance = sum(Abundance)) %>% pull(Abundance)
-df <- physeq %>%  
-  psmelt.dplyr() %>% 
-  group_by(Phylum,.data[[GroupBy]], .data[[Rank]]) %>%
-  filter_all(any_vars(. == taxa)) %>%
-  summarise(Abundance = sum(Abundance)) %>%
-  #  ungroup() %>%
-  mutate(freq.total = paste0(round(100 * Abundance / total, 2), '%')) %>% 
-  mutate(freq.within.group = paste0(round(100 * Abundance / sum(Abundance), 2), '%')) %>% 
-  arrange(desc(Abundance), .data[[GroupBy]])
-
-return(df)
-}
+  
+} 
 
 
-##############################
+
+
+
+
+
 # ------ Box plot -------
-##############################
+
 
 boxplot.pseq <- function(pseq, Rank, GroupBy){
   # Start with psmelt
@@ -1096,7 +1343,7 @@ boxplot.pseq <- function(pseq, Rank, GroupBy){
   box.p <- ps.melt %>% 
     ggplot(aes_(x = as.name(GroupBy), y = as.name(Abund))) +
     geom_boxplot(outlier.shape  = NA) +
-    geom_jitter(aes(color = OTU), height = 0, width = .2) +
+    geom_jitter(height = 0, width = .2) +
     labs(x = "", y = "Relative Abundance (%)\n") +
     scale_y_continuous(labels=scales::percent)+
     # scale_x_discrete(labels=x) +
@@ -1105,13 +1352,15 @@ boxplot.pseq <- function(pseq, Rank, GroupBy){
   return(box.p)  
 }
 
-########################
-# ===== Ordination =====
-########################
 
-#############################
+
+
+# ===== Ordination =====
+
+
+
 # Ordination using factoextra
-# -----------------------------
+
 
 my_ord <- function(pseq, GroupBy, leg){
   # get otu table
@@ -1140,9 +1389,9 @@ my_ord <- function(pseq, GroupBy, leg){
   return(p1)
 }
 
-#####################################
+
 # ==== Kmean and RF clustering  ====
-#####################################
+#
 # return a list with three plots (one MDS based on RF proximity matrix and 2 dendrograms: RF and Euclidean)
 # also return the names of the samples and the related cluster based on #clusters (k) selected
 
@@ -1180,7 +1429,7 @@ plot.cluster.pseq <- function(pseq, k = 3){
                               rect = TRUE, rect_fill = TRUE, 
                               main = paste("Dendrogram using (1 - Random Forest Proximities) - Ward.D2: ", King),
                               xlab = "Samples", ylab = "Distance", sub = "")
-  # Using Euclidean Distance and Wrad.D2 Hierarchical Clustering
+  # Using Euclidean Distance and Ward.D2 Hierarchical Clustering
   hc <- hclust(dist(t(clr_otu), method = 'euclidean'), method = "ward.D2")
   names.hc.cluster = as.factor(cutree(hc, k=k))
   # plot 
@@ -1278,9 +1527,9 @@ permanova.pseq <- function(pseq, GroupBy, plot.taxa.coeff = FALSE){
 }
 
 
-#=====================================
+
 # ----- Constrained ordination -----
-#=====================================
+
 
 # dbRDA
 contr.ord.pseq <- function(pseq, Rank, GroupBy){
@@ -1306,7 +1555,7 @@ contr.ord.pseq <- function(pseq, Rank, GroupBy){
   # summary(res, display=NULL)
   
   ## select only the variables that are explaining variation efficiently.
-  #------------------------------------------------------------------------
+  #
   # calculate variance inflation factors (VIF)
   # variables with scores >10 are redundant
   sort(vif.cca(res))
@@ -1395,7 +1644,7 @@ contr.ord.pseq <- function(pseq, Rank, GroupBy){
   # 'site' ordination
   p1 <- sit %>%
     ggplot(aes(x=RDA1, y=RDA2)) +
-    geom_point(aes_string(color= GroupBy, shape = 'Layer') , size=5, alpha = 0.5) +
+    geom_point(aes_string(color= GroupBy) , size=5, alpha = 0.5) +
     geom_segment(data = vec,
                  inherit.aes=F,
                  mapping=aes(x=0, y=0, xend=adj.vec*RDA1, yend=adj.vec*RDA2),
@@ -1434,9 +1683,8 @@ contr.ord.pseq <- function(pseq, Rank, GroupBy){
   
   # p3 <- egg::ggarrange(p1,p2, labels = c('A', 'B'), nrow = 2, top = paste0("dbRDA: ",King," - ",Rank))
   
-  #--------------------------
-  # Variation Partitioning
-  #--------------------------
+  
+  #---- Variation Partitioning -------
   # extract the sample data from the 'phyloseq' object
   # then remove the 'SampleID' column
   # for only categorical predictors - standardize
@@ -1460,9 +1708,9 @@ contr.ord.pseq <- function(pseq, Rank, GroupBy){
   
 }
 
-###########################
+
 #-----Mantel Test ---------
-###########################
+
 # Does Environment Select?
 mantel.env.pseq <- function(pseq, scatter.plot = FALSE) {
   abund = data.frame(t(microbiome::abundances(pseq)))
@@ -1594,9 +1842,9 @@ mantel.geo.pseq <- function(pseq, scatter.plot = FALSE) {
   }
 }
 
-###################################
-##### Correlation Matrix ##########
-###################################
+
+#------ Correlation Matrix ------
+
 # x is a matrix containing the data
 # method : correlation method. "pearson"" or "spearman"" is supported
 # removeTriangle : remove upper or lower triangle
@@ -1647,9 +1895,9 @@ corstars <-function(x, method=c("pearson", "spearman"), removeTriangle=c("upper"
   }
 } 
 
-###########################################
+
 ##### Flatten Correlation Matrix ##########
-###########################################
+
 # cormat : matrix of the correlation coefficients
 # pmat : matrix of the correlation p-values
 flattenCorrMatrix <- function(cormat, pmat) {
@@ -1721,4 +1969,28 @@ VIPjh <- function(object, j, h) {
   W <- object$loading.weights[,1:h, drop = FALSE]
   Wnorm2 <- colSums(W^2)
   sqrt(nrow(W) * sum(SS * W[j,]^2 / Wnorm2) / sum(SS))
+}
+
+
+##### ALDEX2 strip plot ##########
+
+# function for strip chart (CoDaSeq.R)
+plot_strip <- function(table.aldex, taxa, cond) {
+  x <- enquo(taxa)
+  DA <- ggplot(table.aldex, aes(y=!!x, x=effect)) + 
+    geom_vline(xintercept = 0.0, color = "gray", size = 1)+
+    geom_vline(xintercept = c(-2,2), linetype="dashed") +
+    geom_point(aes(fill=effect1), size=3.5,shape=21, alpha = 0.3) + 
+    theme(legend.key = element_rect(fill="white"), 
+          panel.grid.major = element_line(size = 0.5,
+                                          linetype = "solid", colour = "grey"), 
+          panel.background = element_rect(fill="white", colour="grey50")) +
+    labs(fill = "Effect Size",
+         x = cond,
+         y = NULL) +
+    scale_fill_manual(values = c("blue", "red", "gray")) +
+    # scale_x_continuous(limits = c(-3, 3)) +
+    theme(panel.grid.minor.x=element_blank(),
+          panel.grid.major.x=element_blank())
+  DA
 }

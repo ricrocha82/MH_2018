@@ -7,16 +7,24 @@ editor_options:
   chunk_output_type: console
 ---
 
-```{r setup}
-knitr::opts_chunk$set(
-	fig.height = 5,
-	fig.width = 8,
-	dpi = 180,
-	message = FALSE,
-	warning = FALSE,
-	cache = TRUE,
-	echo = TRUE
-)
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      eval=FALSE, 
+                      message=FALSE, 
+                      warning=FALSE)
+```
+
+```{r CLEAR EVERYTHING, eval=FALSE, include=FALSE}
+# unload all non-base packages
+lapply(names(sessionInfo()$otherPkgs), function(pkgs)
+  detach(
+    paste0('package:', pkgs),
+    character.only = T,
+    unload = T,
+    force = T
+))
+
+rm(list=ls())
 ```
 
 ## Aims
@@ -36,8 +44,8 @@ seed = 1234
 # load the packages
 # main packs to start with
 # BiocManager::install("ade4") # -> to get packages from bioconductor website
-pkgs <- c("WGCNA","phyloseq", "microbiome", "vegan",'egg','adespatial', 'corrplot','RColorBrewer','tidymodels','corrr','GGally','patchwork',"circlize","multcomp",
-          'tidytext','hrbrthemes','embed', 'pvclust','skimr', 'RColorBrewer', 'grid',"pls","tidyverse") # Load packages
+pkgs <- c("phyloseq", "microbiome", "vegan",'egg','adespatial', 'corrplot','RColorBrewer','tidymodels','corrr','GGally','patchwork',"circlize","multcomp",
+          'tidytext','hrbrthemes','embed', 'pvclust','skimr', 'RColorBrewer', 'grid',"tidyverse") # Load packages
 
 invisible(sapply(pkgs,require, character = TRUE))
 select <- dplyr::select # because MASS conflict
@@ -58,6 +66,14 @@ current_directory <- getwd()
 paste("Working in directory:", current_directory)
 ```
 
+```{r}
+# all the pseq lists
+# pseq.list, pseq.clr.list, pseq.filt.list, pseq.rel.filt.list
+#load("pseq.lists.RData")
+```
+
+
+# Data preparation
 
 ```{r prep data}
 # get and prepare the data
@@ -81,7 +97,7 @@ names(OTUdf) <- str_replace_all(names(OTUdf), "_S*[0-9]+",'')
 row.names(OTUdf)[1:5]
 row.names(OTUdf) <- row.names(OTUdf) %>% str_replace_all("MH18_", "")
 # row.names(OTUdf) <- gsub("MH18_", "", row.names(OTUdf))
-OTUdf <- OTUdf %>% dplyr::select(-MH063SR, -MH028SC) # replicate samples
+OTUdf <- OTUdf %>% dplyr::select(-MH063SR, -MH028SC) # remove replicate samples
 ```
 
 ```{r prep data - tax table}
@@ -95,19 +111,19 @@ TAXdf <- TAXdf %>% drop_na(Kingdom, Phylum)
 # replace NA by unknown
 TAXdf <- TAXdf %>% replace(is.na(.), "unknown")
 # remove extra text
-TAXdf <- TAXdf %>% rownames_to_column("OTU") %>%
+TAXdf <- TAXdf %>% 
+  #rownames_to_column("OTU") %>%
   mutate(OTU = str_replace(OTU, "MH18_", "")) %>%
   # change Family Mitochondria in the bacterial order Rickettsiales to o_Rickettsiales
   mutate(Family = case_when(Family == "Mitochondria" ~ "o_Rickettsiales",
-                            TRUE ~ as.character(Family))) %>%
-  column_to_rownames("OTU")
+                            TRUE ~ as.character(Family))) 
 
 TAXdf %>% filter(Family == "o_Rickettsiales")
 
 # row.names(TAXdf) <- gsub("MH18_", "", row.names(TAXdf))
 TAX.table <- TAXdf # generate another table with an OTU column to use later
 
-# new tax table does not have the smae OTUs. Subsetting OTU table
+# new tax table does not have the same OTUs. Subsetting OTU table
 OTUdf <- OTUdf %>% rownames_to_column('OTU') %>% filter(OTU %in% TAXdf$OTU)
 TAXdf <- TAXdf %>% filter(OTU %in% OTUdf$OTU)
 names <- TAXdf$OTU 
@@ -143,6 +159,12 @@ names(OTUdf) <- row.names(meta)
 meta.NA <- names(meta)[apply(meta,2,function(x) any(is.na(x)))] # vector with columns that contain NAs
 #  "pH" "Turbidity" "DO_perc" "DO"
 
+# order layers
+meta <- meta %>% mutate(Layer = fct_relevel(Layer, c("S", "P")))
+
+
+meta %>% select(Layer, Short_ID, Habitat, depth, Temperature, Sal, Chlorophyll, Nox:NH4) %>% rownames_to_column("Sample_ID") %>% write_csv(paste0(folder_path, "meta_publication.csv"))
+
 ```
 
 ```{r prep data - phyloseq objects}
@@ -164,11 +186,136 @@ names(pseq.list) <- c('Archaea', 'Bacteria', 'Eukaryotes')
 # pseq_df_bac <- microbiomeutilities::phy_to_ldf(pseq.list{{2}}, transform.counts = NULL) # pseq to long format
 ```
 
+```{r data prep}
+# filtering data and clr-transformation
+min.prop=0.001 # minimum proportion in any sample (default)
+min.occurrence=0.001 # minimum occurrence across all samples (sparsity filter)
+# only surface and without outliers
+pseq.filt.list <- list()
+pseq.clr.list <- list()
+pseq.rel.filt.list <- list()
+for (i in seq_along(pseq.list)) {
+  # filtering and clr-transformation
+  d.filt0 <- CoDaSeq::codaSeq.filter(otu_table(pseq.list[[i]]), min.prop=0, min.occurrence=0, samples.by.row=FALSE)
+  d.filt <- CoDaSeq::codaSeq.filter(d.filt0, min.prop=min.prop, max.prop=1, min.occurrence=min.occurrence, samples.by.row=FALSE)
+  d.zero.hand <- t(zCompositions::cmultRepl(t(d.filt), label =0, method="CZM")) # filtered
+  d.clr.abund.filt <- CoDaSeq::codaSeq.clr(d.zero.hand, samples.by.row = FALSE) # samples as COLUMN
+  # creatin a TAX table for the phyloseq object
+  TAX.filt <- base::subset(TAXdf, row.names(TAXdf) %in% row.names(d.filt))
+  # create a phyloseq object with clr transformed data
+  df.clr <- phyloseq(otu_table(as.matrix(d.clr.abund.filt), taxa_are_rows = TRUE), 
+                     tax_table(as.matrix(TAX.filt)),sample_data(as.data.frame(sample_data(pseq.list[[i]]))))
+  # phyloseq with only filtered data
+  df.filt <- phyloseq(otu_table(as.matrix(as.data.frame(d.filt)), taxa_are_rows = TRUE), 
+                      tax_table(as.matrix(TAX.filt)), sample_data(as.data.frame(sample_data(pseq.list[[i]]))))
+  # transform relative
+  df.rel <- microbiome::transform(df.filt, 'compositional') # relative abundance
+  # naming
+  name <- paste(names(pseq.list[i]))
+  # put in a list
+  pseq.clr.list[[name]] <- df.clr
+  pseq.filt.list[[name]] <- df.filt
+  pseq.rel.filt.list[[name]] <- df.rel
+  
+  # clean the env
+  rm(d.filt0,d.filt, d.zero.hand, d.clr.abund.filt, TAX.filt, df.clr, df.filt, df.rel)
+}
+
+# checking
+table(tax_table(pseq.list[[2]])[,"Phylum"])
+table(tax_table(pseq.rel.filt.list[[2]])[,"Phylum"])
+sample_data(pseq.filt.list[[2]]) %>% row.names()
+
+save(pseq.list, pseq.clr.list, pseq.filt.list, pseq.rel.filt.list, file= "pseq.lists.RData")
+# load("pseq.lists.RData")
+
+
+# total zOTUs
+pseq.list
+pseq.filt.list
+
+# total reads
+for (i in 1:3) {
+  t.reads.all <- tibble(as(sample_data(pseq.list[[i]]), "data.frame"),
+                 TotalReads = sample_sums(pseq.list[[i]])) %>%
+  summarise(sum(TotalReads))
+
+ t.reads.filt <- tibble(as(sample_data(pseq.filt.list[[i]]), "data.frame"),
+                 TotalReads = sample_sums(pseq.filt.list[[i]])) %>%
+  summarise(sum(TotalReads))
+
+print(paste(round(((t.reads.all - t.reads.filt)/t.reads.all)*100, 2), "%", names(pseq.list[i])))
+}
+
+
+```
+
 ## Methods
 
 ### Map - Sampling Sites
 
 ```{r sampling map}
+# make a SpatialPolygons object which defines a bounding box inside which to crop the world map polygons.
+# make the bounding box called clipper_MH
+clipper_MH <- as(extent(145, 145.7, -42.55, -42.1), "SpatialPolygons") # (min_longitude, max_longitude, min_latitude, max_latitude)
+# get the shapefile (downloaded from Tas gov web site)
+# read the shapefile with readOGR()
+# dsn = file location, layer = name of the file
+shpdata_tas <- readOGR(dsn = "tasstatepolygon", layer = "TAS_STATE_POLYGON_shp")
+# check if the shapefile has the right Co-ordinate Reference System (CRS)
+proj4string(shpdata_tas) 
+# transform the CRS using spTransform and specify the correct CRS (in this case is EPSG:WGS84 (+proj=longlat +datum=WGS84))
+shpdata_tas <- spTransform(shpdata_tas, CRS("+proj=longlat +ellps=GRS80"))
+#  crop the object to the extent of a bounding box, using intersect():
+shpdata_MH_clip <- raster::intersect(shpdata_tas, clipper_MH)
+# check if the crop was ok
+plot(shpdata_MH_clip)
+str(shpdata_MH_clip@data)
+# transform spatial object in dataframe
+shpdata_MH_clip_f <- fortify(shpdata_MH_clip)
+
+
+MH_map <- ggplot() +
+    geom_polygon(data = shpdata_MH_clip_f,
+                 aes(x=long,y=lat,group=group),
+                 fill = 'gray87', color = 'black') + 
+    geom_point(data = meta_surf, 
+               aes(x = long, y = lat), 
+               shape = 21, size = 2, color = 'black') +
+    xlab("Longitude") +
+    ylab("Latitude") + 
+    coord_quickmap() +  # Prevents stretching when resizing
+    theme(legend.justification=c(0,0), legend.position=c(0,0)) +
+    guides(fill = guide_legend(title = 'Locations'))  +
+    labs(title = "All Samples") +
+    scale_fill_discrete(breaks=order) +
+  theme_Publication_3()
+
+MH_map <- ggplot() +
+    geom_polygon(data = shpdata_MH_clip_f,
+                 aes(x=long,y=lat,group=group),
+                 fill = 'gray87', color = 'black') + 
+    geom_point(data = locations_df, aes(x = Long, y = Lat, color = Habitat, fill = Habitat), shape = 21, size = 2, color = 'black') +
+    egg::theme_article() +
+    xlab("Longitude") +
+    ylab("Latitude") + 
+    coord_quickmap() +  # Prevents stretching when resizing
+    theme(legend.justification=c(0,0), legend.position=c(0,0)) +
+    guides(fill = guide_legend(title = 'Locations'))  +
+    labs(title = "All Samples") +
+    scale_fill_discrete(breaks=order)
+
+# add a scale bar in the plot
+map_MH_scale <- MH_map +
+  scalebar(data = shpdata_MH_clip_f,
+           transform = TRUE, dist = 4, dist_unit = "km", model='GRS80',
+           height = 0.01, location = "bottomright", st.size = 3, anchor = c(x = 145.65, y= -42.52))
+# add north arrow
+logo <- north2(map_MH_scale, x = 0.67, y = 0.23, scale = 0.1, symbol = 1)
+
+# inset plots using cowplot package
+MH_map  <- ggdraw(map_MH_scale) + draw_plot(tas_map_annot,.546, .653, .3, .3) +
+  draw_plot(logo, .625,.165,.1,.1)
 
 ```
 
@@ -256,7 +403,6 @@ env_line_plot <- meta %>%
   theme(axis.text.x = element_text(angle = 45, hjust = 1)) 
 
 # boxplot
-meta <- meta %>% mutate(Layer = fct_relevel(Layer, c("S", "P")))
 boxplot_env <- meta %>% 
   select(Layer,Site,Temperature:NH4,-pH, -Turbidity, -DO, -DO_perc) %>% 
   mutate(Layer = fct_relevel(Layer, c("S", "P"))) %>%
@@ -266,7 +412,7 @@ boxplot_env <- meta %>%
   geom_boxplot() +
   scale_color_manual(values = cols_layer) +
   geom_jitter(alpha=0.2, position = position_jitterdodge())+
-  geom_point(size=1,alpha=0.2)+theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  geom_point(size=1,alpha=0.2)+
   facet_wrap(~env_par, scales = "free_y") +
   theme(strip.background = element_rect(fill = "white")) +
   scale_x_discrete(limits = c("ocean", 'C', 'B', 'A','GR')) +  
@@ -371,12 +517,12 @@ pred_pca_env_factors <- tidied_pca %>%
 pca.plot <- juice(pca_prep) %>% # juice() to return the results of a recipe
         mutate(Layer = fct_relevel(Layer, c("S", "P"))) %>%
   ggplot(aes(PC1,PC2)) +
-  geom_point(aes(color = Site_Layer, shape = Layer), alpha = 0.7, size =5) + 
+  geom_point(aes(color = Site_Layer), alpha = 0.7, size =5) + 
   #geom_text(check_overlap = TRUE, hjust = 'inward', family = 'IBM Plex Sans') +
   geom_hline(yintercept=0, linetype="dashed", alpha = 0.3) +
   geom_vline(xintercept=0, linetype="dashed", alpha = 0.3) +
   # scale_colour_viridis_d(option = "plasma") 
-  scale_color_manual(values = cols_site_layer) + 
+  scale_color_manual(values = cols_site_layer) +
         theme_Publication_3()
 
 # get % variation to add in the legend axis
@@ -423,6 +569,8 @@ pca.env <- pca.plot +
   stat_ellipse(aes(x=PC1,y=PC2,group=k.env),
                level=0.95, alpha=0.7, type = "norm", linetype = 2) +
         ggtitle("PCA: Environmental variables")
+
+pca.env %>% ggsave(filename = "C:/Users/rrocha/Documents/R/phd/2018/output/plots/figures/pca_env.tiff", compression = "lzw")
 ```
 
 Comparison of clusters and habitat_layer shows that samples from each layer and habitat are perfectly separated, indicating that they have clear differences regarding physicochemical characteristics.
@@ -455,9 +603,10 @@ write.csv(perm.tb, "C:/Users/rrocha/Documents/R/phd/2018/output/data/all/permano
 
 ```{r clean R env}
 # keep the environment tidy
-rm(list=setdiff(ls(), c('seed',"meta","OTUdf",'pseq.all', 'pseq.list', 'TAXdf', 'TAX.table','cols_site_layer', 'cols_layer',"cols_hab_layer","pca.env")))
+rm(list=setdiff(ls(), c('seed',"meta","OTUdf",'pseq.all', 'pseq.list', 'TAXdf', 'TAX.table','cols_site_layer', 'cols_layer',"cols_hab_layer","pca.env", "folder_path")))
 source('~/R/phd/2018/script/chapter2/my_functions.R')
 source('~/R/phd/2018/script/chapter2/theme_publication.R')
+select <- dplyr::select # because MASS conflict
 ```
 
 ### Alpha Diversity
@@ -525,7 +674,7 @@ names(pseq.rar.list) <- c('Archaea', 'Bacteria', 'Eukaryotes')
  + Observed: count of unique OTUs in each samples
  + Chao1: estimate diversity from abundance data (influenced by rare species)
  + Shannon's (H): influenced by rare species
- + Simpson's (D):less sensitive to the difference in taxa richness than Shannon's index - high values mean less diversity (range: 0-1)
+ + Simpson's Index ($\lambda):less sensitive to the difference in taxa richness than Shannon's index - high values mean high diversity (range: 0-1)
  + inverse Simpson: 1/D - positively correlated with Shannon's
  + Evenness (Pielou's evenness): the lower value of Evenness, the lower the presence of a dominant specie = high diversity
  + [link](http://www.countrysideinfo.co.uk/simpsons.htm)
@@ -555,6 +704,7 @@ for (i in 1: length(pseq.rar.list)) {
 }
 
 # calculate the Stats for alpha diversity and make a table (lm)
+boxplot.list <- list()
 for (i in seq_along(pseq.rar.list)) {
   adiv <- estimate_richness(pseq.rar.list[[i]], measures=c("Chao1", "Shannon",  "InvSimpson"))
   adiv <- pseq.rar.list[[i]] %>% evenness('Pielou') %>% rename(Pielou = pielou) %>% 
@@ -562,40 +712,40 @@ for (i in seq_along(pseq.rar.list)) {
   adiv$Sample_ID<- rownames(adiv) %>%
     as.factor()
   
-  df <- sample_data(pseq.rar.list[[i]]) %>% 
-    unclass() %>% data.frame() %>%
-    left_join(adiv, by = "Sample_ID") %>%
-    select(Site_Layer, Chao1 , Shannon , InvSimpson, Pielou) %>% 
-    gather(key="env_par", value="value", -Site_Layer) %>% 
-    group_by(Site_Layer, env_par)%>%
-    summarise(mean= mean(value), sd= sd(value), max = max(value),min = min(value))
-  write.csv(df, file = paste0("C:/Users/rrocha/Documents/R/phd/2018/output/data/all/alpha/alpha_summary.Site_Layer_", names(pseq.rar.list[i]), ".csv"))
-  
-  df <- sample_data(pseq.rar.list[[i]]) %>% 
-    unclass() %>% data.frame() %>%
-    left_join(adiv, by = "Sample_ID") %>%
-    select(Site_Layer,  Chao1 , Shannon , InvSimpson, Pielou) %>% 
-    gather(key="env_par", value="value", -Site_Layer) %>% 
-    nest(data = c(Site_Layer, value)) %>% 
-    mutate(model = map(data, ~ anova(lm(value ~ Site_Layer, .))), 
-           tidy = map(model, broom::tidy)) %>% 
-    select(env_par, tidy) %>% 
-    unnest(tidy)
-  write.csv(df, file = paste0("C:/Users/rrocha/Documents/R/phd/2018/output/data/all/alpha/alpha_anova_", names(pseq.rar.list[i]), ".csv"))
-  
-  df <- sample_data(pseq.rar.list[[i]]) %>% 
-    unclass() %>% data.frame() %>%
-    left_join(adiv, by = "Sample_ID") %>%
-    select(Site_Layer,  Chao1 , Shannon , InvSimpson, Pielou) %>% 
-    gather(key="env_par", value="value", -Site_Layer) %>% 
-    nest(data = c(Site_Layer, value)) %>% 
-    mutate(model = purrr::map(data, ~ multcomp::glht(aov(value ~ Site_Layer, .), linfct = multcomp::mcp(Site_Layer = "Tukey"), test = adjusted(type = "bonferroni"))), 
-           tidy = purrr::map(model, broom::tidy)) %>% 
-    select(env_par, tidy) %>% 
-    unnest(tidy)
-  write.csv(df, file = paste0("C:/Users/rrocha/Documents/R/phd/2018/output/data/all/alpha/alpha_Tuk_", names(pseq.rar.list[i]), ".csv"))
+  # df <- sample_data(pseq.rar.list[[i]]) %>% 
+  #   unclass() %>% data.frame() %>%
+  #   left_join(adiv, by = "Sample_ID") %>%
+  #   select(Site_Layer, Chao1 , Shannon , InvSimpson, Pielou) %>% 
+  #   gather(key="env_par", value="value", -Site_Layer) %>% 
+  #   group_by(Site_Layer, env_par)%>%
+  #   summarise(mean= mean(value), sd= sd(value), max = max(value),min = min(value))
+  # write.csv(df, file = paste0("C:/Users/rrocha/Documents/R/phd/2018/output/data/all/alpha/alpha_summary.Site_Layer_", names(pseq.rar.list[i]), ".csv"))
+  # 
+  # df <- sample_data(pseq.rar.list[[i]]) %>% 
+  #   unclass() %>% data.frame() %>%
+  #   left_join(adiv, by = "Sample_ID") %>%
+  #   select(Site_Layer,  Chao1 , Shannon , InvSimpson, Pielou) %>% 
+  #   gather(key="env_par", value="value", -Site_Layer) %>% 
+  #   nest(data = c(Site_Layer, value)) %>% 
+  #   mutate(model = map(data, ~ anova(lm(value ~ Site_Layer, .))), 
+  #          tidy = map(model, broom::tidy)) %>% 
+  #   select(env_par, tidy) %>% 
+  #   unnest(tidy)
+  # write.csv(df, file = paste0("C:/Users/rrocha/Documents/R/phd/2018/output/data/all/alpha/alpha_anova_", names(pseq.rar.list[i]), ".csv"))
+  # 
+  # df <- sample_data(pseq.rar.list[[i]]) %>% 
+  #   unclass() %>% data.frame() %>%
+  #   left_join(adiv, by = "Sample_ID") %>%
+  #   select(Site_Layer,  Chao1 , Shannon , InvSimpson, Pielou) %>% 
+  #   gather(key="env_par", value="value", -Site_Layer) %>% 
+  #   nest(data = c(Site_Layer, value)) %>% 
+  #   mutate(model = purrr::map(data, ~ multcomp::glht(aov(value ~ Site_Layer, .), linfct = multcomp::mcp(Site_Layer = "Tukey"), test = adjusted(type = "bonferroni"))), 
+  #          tidy = purrr::map(model, broom::tidy)) %>% 
+  #   select(env_par, tidy) %>% 
+  #   unnest(tidy)
+  # write.csv(df, file = paste0("C:/Users/rrocha/Documents/R/phd/2018/output/data/all/alpha/alpha_Tuk_", names(pseq.rar.list[i]), ".csv"))
  
-   boxplot_alpha <- sample_data(pseq.rar.list[[i]]) %>% 
+   boxplot.list[[i]] <- sample_data(pseq.rar.list[[i]]) %>% 
     unclass() %>% data.frame() %>%
     left_join(adiv, by = "Sample_ID") %>%
     select(Site, Layer,  Chao1 , Shannon , InvSimpson, Pielou) %>% 
@@ -610,14 +760,21 @@ for (i in seq_along(pseq.rar.list)) {
     theme(strip.background = element_rect(fill = "white")) +
     scale_x_discrete(limits = c("ocean", 'C', 'B', 'A','GR')) +  
     scale_color_manual(values = cols_layer) +
-    ggtitle(paste0("Alpha Diveristy - Surface vs Intermediate Layers - ",names(pseq.rar.list[i]))) +
+    ggtitle(paste0(names(pseq.rar.list[i]))) +
     theme_Publication_3() + 
     theme(axis.text.x = element_text(angle = 45, hjust = 1,size = 10),legend.position = 'bottom') 
  
-    print(boxplot_alpha)
-  
-  rm(adiv, df,boxplot_alpha)
+  #   print(boxplot_alpha)
+  # 
+  # rm(adiv, df,boxplot_alpha)
 }
+
+plot.box <- wrap_plots(boxplot.list, nrow = 3, guides = "collect") &  theme(legend.position = "bottom")
+
+plot.box <- plot.box + plot_annotation(
+  title = 'Alpha Diveristy - Surface vs Intermediate Layers')
+
+plot.box %>% ggsave(filename = "C:/Users/rrocha/Documents/R/phd/2018/output/plots/figures/box.plt.alpha.div.tiff", compression = "lzw", width = 8.15, height = 12.56)
 
 ```
 
@@ -662,47 +819,6 @@ for (i in seq_along(pseq.list)) {
 
 ```
 
-
-```{r data prep}
-# filtering data and clr-transformation
-min.prop=0.001 # minimum proportion in any sample (default)
-min.occurrence=0.001 # minimum occurrence across all samples (sparsity filter)
-# only surface and without outliers
-pseq.filt.list <- list()
-pseq.clr.list <- list()
-pseq.rel.filt.list <- list()
-for (i in seq_along(pseq.list)) {
-  # filtering and clr-transformation
-  d.filt0 <- CoDaSeq::codaSeq.filter(otu_table(pseq.list[[i]]), min.prop=0, min.occurrence=0, samples.by.row=FALSE)
-  d.filt <- CoDaSeq::codaSeq.filter(d.filt0, min.prop=min.prop, max.prop=1, min.occurrence=min.occurrence, samples.by.row=FALSE)
-  d.zero.hand <- t(zCompositions::cmultRepl(t(d.filt), label =0, method="CZM")) # filtered
-  d.clr.abund.filt <- CoDaSeq::codaSeq.clr(d.zero.hand, samples.by.row = FALSE) # samples as COLUMN
-  # creatin a TAX table for the phyloseq object
-  TAX.filt <- base::subset(TAXdf, row.names(TAXdf) %in% row.names(d.filt))
-  # create a phyloseq object with clr transformed data
-  df.clr <- phyloseq(otu_table(as.matrix(d.clr.abund.filt), taxa_are_rows = TRUE), 
-                     tax_table(as.matrix(TAX.filt)),sample_data(as.data.frame(sample_data(pseq.list[[i]]))))
-  # phyloseq with only filtered data
-  df.filt <- phyloseq(otu_table(as.matrix(as.data.frame(d.filt)), taxa_are_rows = TRUE), 
-                      tax_table(as.matrix(TAX.filt)), sample_data(as.data.frame(sample_data(pseq.list[[i]]))))
-  # transform relative
-  df.rel <- microbiome::transform(df.filt, 'compositional') # relative abundance
-  # naming
-  name <- paste(names(pseq.list[i]))
-  # put in a list
-  pseq.clr.list[[name]] <- df.clr
-  pseq.filt.list[[name]] <- df.filt
-  pseq.rel.filt.list[[name]] <- df.rel
-  
-  # clean the env
-  rm(d.filt0,d.filt, d.zero.hand, d.clr.abund.filt, TAX.filt, df.clr, df.filt, df.rel)
-}
-
-# checking
-table(tax_table(pseq.list[[2]])[,"Phylum"])
-table(tax_table(pseq.rel.filt.list[[2]])[,"Phylum"])
-sample_data(pseq.filt.list[[2]]) %>% row.names()
-```
 
 #### Composition plots
 
@@ -917,6 +1033,7 @@ circus.df <- ps.melt %>%
 top <- circus.df  %>% slice_max(total, n= 15) 
 
 # make another data frame with the others taxa
+# checj funtion fct_lump -> mutate(species = fct_lump(species, n = 3))
 no_top <- circus.df %>% anti_join(top) %>% # to make a complete dataframe use bind_rows()
   summarise(.,
         across(where(is.numeric), sum),
@@ -1209,8 +1326,13 @@ p3 <- plot_list[[3]][[1]] +
         scale_color_manual(values = cols_site_layer) +
         theme(legend.position = "none")
 
-pca.env + p1 + p2 + p3 + 
-  plot_layout(guides = 'collect')
+ord.plots.all <- pca.env + p1 + p2 + p3 + 
+  plot_layout(guides = 'collect') &
+  theme(legend.title = element_text(size = 14),
+        legend.text = element_text(size = 14))
+
+ord.plots.all %>% ggsave(filename = "C:/Users/rrocha/Documents/R/phd/2018/output/plots/figures/ord.plots.all.tiff", compression = "lzw", width = 24, height = 12)
+
 ```
 
 ```{r permanova}
