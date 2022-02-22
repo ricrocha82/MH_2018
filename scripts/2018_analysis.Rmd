@@ -36,9 +36,10 @@ This study seeks to provide more insights on the microbial community of the Macq
 # Packages and initial steps
 
 ```{r packages and functions}
+# dir.create("~/R/git_hub/MH-2018/output")
 # set working directory and seed
-setwd("C:/Users/rrocha/Documents/R/phd/2018/data")
-folder_path <- "C:/Users/rrocha/Documents/R/phd/2018/output/"
+setwd("~/R/git_hub/MH_2018/data")
+folder_path <- "~/R/git_hub/MH_2018/output/"
 seed = 1234
 
 # load the packages
@@ -52,8 +53,8 @@ select <- dplyr::select # because MASS conflict
 
 packageVersion("tidyverse")
 
-source('~/R/phd/2018/script/chapter2/my_functions.R')
-source('~/R/phd/2018/script/chapter2/theme_publication.R')
+source('~/R/git_hub/MH_2018/scripts/my_functions.R')
+source('~/R/git_hub/MH_2018/scripts/theme_publication.R')
 theme_set(theme_Publication_3())
 
 # set colors
@@ -330,7 +331,7 @@ PERMANOVA: to determine the influences of regions and layers (both surface and i
 ```{r env factors summary tables}
 # table env par
 df.env <- meta %>% select(Temperature:NH4 ,-pH, -Turbidity, -DO, -DO_perc) 
-write.csv(df.env, "C:/Users/rrocha/Documents/R/phd/2018/output/data/all/env/df_env.csv")
+write.csv(df.env, "~R/git_hub/MH_2018/output/data/all/env/df_env.csv")
 # Summary 
 # Environmnental data (surface samples have NAs for pH, Turbidity and DO, DO_perc)
 meta_long <- meta %>% 
@@ -346,7 +347,7 @@ meta_summary.site1 <- meta %>%
                         dplyr::summarise(across(where(is.numeric), list(mean= mean, sd = stats::sd, max = base::max, min = base::min)))
 
 # last format on excel
-write.csv(meta_summary.site, "C:/Users/rrocha/Documents/R/phd/2018/output/data/all/env/meta_summary_site.csv")
+write.csv(meta_summary.site, "~R/git_hub/MH_2018/output/data/all/env/meta_summary_site.csv")
 ```
 
 ```{r env factors stats}
@@ -357,7 +358,7 @@ stats.env <- meta_long %>%
          tidy = purrr::map(model, broom::tidy)) %>% 
   select(env_par, tidy) %>% 
   unnest(tidy)
-write.csv(stats.env, "C:/Users/rrocha/Documents/R/phd/2018/output/data/all/env/anova_env_summary.csv")
+write.csv(stats.env, "~R/git_hub/MH_2018/output/data/all/env/anova_env_summary.csv")
 
 # use autoplot() for Diagnostic plots
 # Compute a linear model
@@ -373,10 +374,10 @@ stats.env.Tukey.BF <- meta_long %>%
          tidy = purrr::map(model, broom::tidy)) %>% 
   dplyr::select(env_par, tidy) %>% 
   unnest(tidy) 
-write.csv(stats.env.Tukey.BF, "C:/Users/rrocha/Documents/R/phd/2018/output/data/all/env/anova_env_summary_tukey_BF.csv")
+write.csv(stats.env.Tukey.BF, "~R/git_hub/MH_2018/output/data/all/env/anova_env_summary_tukey_BF.csv")
 
 # only sig
-env.sig.tukey.BF <- stats.env.Tukey.BF %>% filter(adj.p.value < 0.001)                    write.csv(env.sig.tukey.BF, "C:/Users/rrocha/Documents/R/phd/2018/output/data/all/env/anova_env_summary_tukey_sig_BF.csv")
+env.sig.tukey.BF <- stats.env.Tukey.BF %>% filter(adj.p.value < 0.001)                    write.csv(env.sig.tukey.BF, "~R/git_hub/MH_2018/output/data/all/env/anova_env_summary_tukey_sig_BF.csv")
 
 ```
 
@@ -570,7 +571,7 @@ pca.env <- pca.plot +
                level=0.95, alpha=0.7, type = "norm", linetype = 2) +
         ggtitle("PCA: Environmental variables")
 
-pca.env %>% ggsave(filename = "C:/Users/rrocha/Documents/R/phd/2018/output/plots/figures/pca_env.tiff", compression = "lzw")
+pca.env %>% ggsave(filename = "~R/git_hub/MH_2018/output/plots/figures/pca_env.tiff", compression = "lzw")
 ```
 
 Comparison of clusters and habitat_layer shows that samples from each layer and habitat are perfectly separated, indicating that they have clear differences regarding physicochemical characteristics.
@@ -597,7 +598,7 @@ pair.tb <- pair.df %>% select(-sig) %>% filter(p.adjusted < 0.01)
 perm.tb <- rbind(adonis.tb, pair.tb)
 
 # save as csv
-write.csv(perm.tb, "C:/Users/rrocha/Documents/R/phd/2018/output/data/all/permanova_env.csv")
+write.csv(perm.tb, "~R/git_hub/MH_2018/output/data/all/permanova_env.csv")
 ```
 
 
@@ -719,7 +720,7 @@ for (i in seq_along(pseq.rar.list)) {
   #   gather(key="env_par", value="value", -Site_Layer) %>% 
   #   group_by(Site_Layer, env_par)%>%
   #   summarise(mean= mean(value), sd= sd(value), max = max(value),min = min(value))
-  # write.csv(df, file = paste0("C:/Users/rrocha/Documents/R/phd/2018/output/data/all/alpha/alpha_summary.Site_Layer_", names(pseq.rar.list[i]), ".csv"))
+  # write.csv(df, file = paste0("~R/git_hub/MH_2018/output/data/all/alpha/alpha_summary.Site_Layer_", names(pseq.rar.list[i]), ".csv"))
   # 
   # df <- sample_data(pseq.rar.list[[i]]) %>% 
   #   unclass() %>% data.frame() %>%
@@ -731,7 +732,7 @@ for (i in seq_along(pseq.rar.list)) {
   #          tidy = map(model, broom::tidy)) %>% 
   #   select(env_par, tidy) %>% 
   #   unnest(tidy)
-  # write.csv(df, file = paste0("C:/Users/rrocha/Documents/R/phd/2018/output/data/all/alpha/alpha_anova_", names(pseq.rar.list[i]), ".csv"))
+  # write.csv(df, file = paste0("~R/git_hub/MH_2018/output/data/all/alpha/alpha_anova_", names(pseq.rar.list[i]), ".csv"))
   # 
   # df <- sample_data(pseq.rar.list[[i]]) %>% 
   #   unclass() %>% data.frame() %>%
@@ -743,7 +744,7 @@ for (i in seq_along(pseq.rar.list)) {
   #          tidy = purrr::map(model, broom::tidy)) %>% 
   #   select(env_par, tidy) %>% 
   #   unnest(tidy)
-  # write.csv(df, file = paste0("C:/Users/rrocha/Documents/R/phd/2018/output/data/all/alpha/alpha_Tuk_", names(pseq.rar.list[i]), ".csv"))
+  # write.csv(df, file = paste0("~R/git_hub/MH_2018/output/data/all/alpha/alpha_Tuk_", names(pseq.rar.list[i]), ".csv"))
  
    boxplot.list[[i]] <- sample_data(pseq.rar.list[[i]]) %>% 
     unclass() %>% data.frame() %>%
@@ -774,7 +775,7 @@ plot.box <- wrap_plots(boxplot.list, nrow = 3, guides = "collect") &  theme(lege
 plot.box <- plot.box + plot_annotation(
   title = 'Alpha Diveristy - Surface vs Intermediate Layers')
 
-plot.box %>% ggsave(filename = "C:/Users/rrocha/Documents/R/phd/2018/output/plots/figures/box.plt.alpha.div.tiff", compression = "lzw", width = 8.15, height = 12.56)
+plot.box %>% ggsave(filename = "~R/git_hub/MH_2018/output/plots/figures/box.plt.alpha.div.tiff", compression = "lzw", width = 8.15, height = 12.56)
 
 ```
 
@@ -794,7 +795,7 @@ for (i in seq_along(pseq.rar.list)) {
     shave()  %>%                                   # Shave off the upper triangle for a clean result
     select(term:NH4)
 # save
-  write.csv(cor.alpha_env, file = paste0("C:/Users/rrocha/Documents/R/phd/2018/output/data/all/alpha/corr_alpha_env_", names(pseq.rar.list[i]), ".csv"))
+  write.csv(cor.alpha_env, file = paste0("~R/git_hub/MH_2018/output/data/all/alpha/corr_alpha_env_", names(pseq.rar.list[i]), ".csv"))
  rm(adiv,  cor.alpha_env)
   } 
 ```
@@ -834,7 +835,7 @@ for (i in seq_along(pseq.list)) {
     tax <- Rank
     summary_rel[[j]] <- summarize_taxa(pseq.list[[i]], tax[[j]], arrange = TRUE) # function from 
     names(summary_rel)[j] <- paste0(names(pseq.list[i]),"_",tax[[j]])
-    write.csv(summary_rel[[j]], paste0('C:/Users/rrocha/Documents/R/phd/2018/output/data/all/composition/summary_tables/all/rel_summary_all_',tax[[j]],'_',names(pseq.list[i]),".csv"))
+    write.csv(summary_rel[[j]], paste0('~R/git_hub/MH_2018/output/data/all/composition/summary_tables/all/rel_summary_all_',tax[[j]],'_',names(pseq.list[i]),".csv"))
     name <- paste(names(pseq.list[i]))
     summary_all[[name]][[j]] <- summary_rel[[j]]
     names(summary_all[[i]])[j] <- paste(tax[j])
@@ -857,7 +858,7 @@ for (i in seq_along(pseq.list)) {
       select(-Abundance) %>%
       pivot_wider(names_from = all_of(tax[[j]]), values_from = freq) %>% # transform in a wide table
       arrange(factor(.data[[Group]], levels = group.level))
-    write.csv(table[[j]], paste0('C:/Users/rrocha/Documents/R/phd/2018/output/data/all/composition/summary_tables/group/rel_summary_',Group,'_',tax[[j]],"_",names(pseq.list[i]),".csv"))
+    write.csv(table[[j]], paste0('~R/git_hub/MH_2018/output/data/all/composition/summary_tables/group/rel_summary_',Group,'_',tax[[j]],"_",names(pseq.list[i]),".csv"))
     name <- paste(names(pseq.list[i]))
     summary_all_tax[[name]][[j]] <- summary_rel_tax[[j]]
     names(summary_all_tax[[i]])[j] <- paste(tax[j])
@@ -877,7 +878,7 @@ for (i in seq_along(pseq.list)) {
       arrange(factor(.$Site_Layer, levels = c('ocean_S','C_S','C_P','B_S','B_P','A_S','A_P','GR_S'))) %>%
       select(-freq.within.group) %>%
       slice_head(n = 5)
-    write.csv(summary_rel_subtax[[j]], paste0('C:/Users/rrocha/Documents/R/phd/2018/output/data/all/composition/summary_tables/summary_subtax/rel_summary_Site_Layer_',tax[[j]],"_",names(pseq.list[i]),".csv"))
+    write.csv(summary_rel_subtax[[j]], paste0('~R/git_hub/MH_2018/output/data/all/composition/summary_tables/summary_subtax/rel_summary_Site_Layer_',tax[[j]],"_",names(pseq.list[i]),".csv"))
     name <- paste(names(pseq.list[i]))
     summary_all_subtax[[name]][[j]] <- summary_rel_subtax[[j]]
     names(summary_all_subtax[[i]])[j] <- paste(tax[j])
@@ -1068,7 +1069,7 @@ to_save <- circus.df.plot %>%
           mutate(across(is.numeric, ~. *100),
           across(is.numeric, ~ round(.,2)))
 write.csv(to_save, 
-          paste0('C:/Users/rrocha/Documents/R/phd/2018/output/plots/all/composition/circus/circus_',{{kingdom}},"_",{{Rank2}},"_",{{Rank}},"_table",".csv"))
+          paste0('~R/git_hub/MH_2018/output/plots/all/composition/circus/circus_',{{kingdom}},"_",{{Rank2}},"_",{{Rank}},"_table",".csv"))
 ```
 
 
@@ -1089,13 +1090,13 @@ mat <- as.matrix(circus.df.plot)
 
 # save as svg 
 svg(filename=, 
-          paste0('C:/Users/rrocha/Documents/R/phd/2018/output/plots/all/composition/circus/circus_',{{kingdom}},"_",{{Rank}},".svg"), 
+          paste0('~R/git_hub/MH_2018/output/plots/all/composition/circus/circus_',{{kingdom}},"_",{{Rank}},".svg"), 
     width=11, # inches ( = x*144 pixels)
     height=6)
 
 # SVG sizes are in inches, not pixels
 #res <- 144
-#svglite::svglite('C:/Users/rrocha/Documents/R/phd/2018/output/plots/all/composition/circus/test.svg', width = 1584/res, height = 864/res)
+#svglite::svglite('~R/git_hub/MH_2018/output/plots/all/composition/circus/test.svg', width = 1584/res, height = 864/res)
 
 # set plotting area
 par(xpd=NA) # or par(xpd=TRUE) to enable things to be drawn outside the plot region.
@@ -1201,7 +1202,7 @@ to_save <- circus.df.plot %>%
           mutate(across(is.numeric, ~. *100),
           across(is.numeric, ~ round(.,2)))
 write.csv(to_save, 
-          paste0('C:/Users/rrocha/Documents/R/phd/2018/output/plots/all/composition/circus/circus_',{{kingdom}},"_",{{Rank}},"_",taxa.to.filter,"_filtered_table",".csv"))
+          paste0('~R/git_hub/MH_2018/output/plots/all/composition/circus/circus_',{{kingdom}},"_",{{Rank}},"_",taxa.to.filter,"_filtered_table",".csv"))
 ```
 
 
@@ -1331,7 +1332,7 @@ ord.plots.all <- pca.env + p1 + p2 + p3 +
   theme(legend.title = element_text(size = 14),
         legend.text = element_text(size = 14))
 
-ord.plots.all %>% ggsave(filename = "C:/Users/rrocha/Documents/R/phd/2018/output/plots/figures/ord.plots.all.tiff", compression = "lzw", width = 24, height = 12)
+ord.plots.all %>% ggsave(filename = "~R/git_hub/MH_2018/output/plots/figures/ord.plots.all.tiff", compression = "lzw", width = 24, height = 12)
 
 ```
 
@@ -1345,7 +1346,7 @@ df <- list()
 for (i in seq_along(pseq.clr.list)) {
   df[[i]] <- permanova.pseq(pseq.clr.list[[i]], 'Habitat_Layer')
   for (i in seq_along(df)) {
-    write.csv(df[[i]], paste0('C:/Users/rrocha/Documents/R/phd/2018/output/data/all/beta_div/beta_div_habitat_layer_',names(df[i]),names(pseq.clr.list[i]),'.csv'))
+    write.csv(df[[i]], paste0('~R/git_hub/MH_2018/output/data/all/beta_div/beta_div_habitat_layer_',names(df[i]),names(pseq.clr.list[i]),'.csv'))
     
   }
 }

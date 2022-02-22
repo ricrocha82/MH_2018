@@ -30,8 +30,8 @@ rm(list=ls())
 
 ```{r packages and functions}
 # set working directory and seed
-setwd("C:/Users/rrocha/Documents/R/phd/2018/data")
-folder_path <- "C:/Users/rrocha/Documents/R/phd/2018/output/"
+setwd("~R/git_hub/MH_2018/data")
+folder_path <- "~R/git_hub/MH_2018/output/"
 seed = 1234
 
 # load the packages
@@ -706,7 +706,7 @@ p_nox_bac <- hive1 %>%
         legend.position = "bottom",
         legend.key.size = unit(-0.5,"cm")) 
 
-p_nox_bac %>% ggsave(filename = "C:/Users/rrocha/Documents/R/phd/2018/output/plots/figures/bac_nox.tiff", compression = "lzw", height = 7.01, width = 13.3)
+p_nox_bac %>% ggsave(filename = "~R/git_hub/MH_2018/output/plots/figures/bac_nox.tiff", compression = "lzw", height = 7.01, width = 13.3)
 
 ```
 
@@ -949,17 +949,17 @@ p_nh4 <- hive1 %>%
         legend.position = "bottom",
         legend.key.size = unit(-0.5,"cm")) 
 
-p_nh4 %>% ggsave(filename = "C:/Users/rrocha/Documents/R/phd/2018/output/plots/figures/bac_nh4.tiff", compression = "lzw", height = 7.01, width = 13.3)
+p_nh4 %>% ggsave(filename = "~R/git_hub/MH_2018/output/plots/figures/bac_nh4.tiff", compression = "lzw", height = 7.01, width = 13.3)
 
 ```
 
 # combine plots for publication
 ```{r}
 nox <- p_nox_bac + p_nox + plot_annotation(tag_levels = 'A')
-nox %>% ggsave(filename = "C:/Users/rrocha/Documents/R/phd/2018/output/plots/figures/nox_all.tiff", compression = "lzw", height = 9, width = 19.33)
+nox %>% ggsave(filename = "~R/git_hub/MH_2018/output/plots/figures/nox_all.tiff", compression = "lzw", height = 9, width = 19.33)
 
 nh4_po4 <- p_nh4 + p_po4 + plot_annotation(tag_levels = 'A')
-nh4_po4 %>% ggsave(filename = "C:/Users/rrocha/Documents/R/phd/2018/output/plots/figures/nh4_po4 _all.tiff", compression = "lzw", height = 9, width = 19.33)
+nh4_po4 %>% ggsave(filename = "~R/git_hub/MH_2018/output/plots/figures/nh4_po4 _all.tiff", compression = "lzw", height = 9, width = 19.33)
 
 ```
 

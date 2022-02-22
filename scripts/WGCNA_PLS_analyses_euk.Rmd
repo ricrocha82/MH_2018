@@ -30,8 +30,8 @@ rm(list=ls())
 
 ```{r packages and functions}
 # set working directory and seed
-setwd("C:/Users/rrocha/Documents/R/phd/2018/data")
-folder_path <- "C:/Users/rrocha/Documents/R/phd/2018/output/"
+setwd("~R/git_hub/MH_2018/data")
+folder_path <- "~R/git_hub/MH_2018/output/"
 seed = 1234
 
 # load the packages
@@ -695,7 +695,7 @@ p_nox <- hive1 %>%
         legend.position = "bottom",
         legend.key.size = unit(-0.5,"cm")) 
 
-p_nox %>% ggsave(filename = "C:/Users/rrocha/Documents/R/phd/2018/output/plots/figures/euk_nox.tiff", compression = "lzw", height = 7.01, width = 13.3)
+p_nox %>% ggsave(filename = "~R/git_hub/MH_2018/output/plots/figures/euk_nox.tiff", compression = "lzw", height = 7.01, width = 13.3)
 
 # https://ggrepel.slowkow.com/articles/examples.html
 ```
@@ -929,6 +929,6 @@ p_po4 <- hive1 %>%
         legend.position = "bottom",
         legend.key.size = unit(-0.5,"cm")) 
 
-p_po4 %>% ggsave(filename = "C:/Users/rrocha/Documents/R/phd/2018/output/plots/figures/euk_po4.tiff", compression = "lzw", height = 7.01, width = 13.3)
+p_po4 %>% ggsave(filename = "~R/git_hub/MH_2018/output/plots/figures/euk_po4.tiff", compression = "lzw", height = 7.01, width = 13.3)
 ```
 
