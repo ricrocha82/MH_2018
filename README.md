@@ -2,7 +2,7 @@
 
 This repository contains scripts used to process and analyse the data and to reproduce the figures using 16S and 18S rRNA amplicon sequencing data for our paper:
 
-[The importance of environmental parameters and mixing zone in shaping estuarine microbial communities along a freshwater-marine gradient](https://....)
+Preprint: [The importance of environmental parameters and mixing zone in shaping estuarine microbial communities along a freshwater-marine gradient](https://www.biorxiv.org/content/10.1101/2022.03.07.483378v1)
 
 ## Scripts
 
